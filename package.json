@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/config.js && node --check src/queue.js && node --check src/registry.js && node --check src/upstreams.js"
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/queue.js && node --check src/registry.js && node --check src/upstreams.js && node --check src/health.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

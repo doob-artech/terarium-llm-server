@@ -3,11 +3,13 @@ import { config } from './config.js';
 import { requireAdminKey, requireClientKey } from './auth.js';
 import { createWorkerRegistry } from './registry.js';
 import { LlmQueue } from './queue.js';
+import { WorkerHealthMonitor } from './health.js';
 
 const app = express();
 const registry = createWorkerRegistry();
 await registry.init();
 const queue = new LlmQueue(registry);
+const healthMonitor = new WorkerHealthMonitor(registry, { onWorkerRecovered: () => queue.pump() });
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -66,6 +68,30 @@ app.get('/v1/workers', requireAdminKey, (req, res) => {
   res.json({ workers: registry.listPublic() });
 });
 
+app.get('/v1/workers/health', requireAdminKey, (req, res) => {
+  res.json(healthMonitor.status());
+});
+
+app.post('/v1/workers/health/check', requireAdminKey, async (req, res) => {
+  try {
+    await healthMonitor.runOnce();
+    queue.pump();
+    res.json(healthMonitor.status());
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'healthcheck_failed' } });
+  }
+});
+
+app.post('/v1/workers/:id/health/check', requireAdminKey, async (req, res) => {
+  try {
+    const worker = await healthMonitor.checkOne(req.params.id);
+    queue.pump();
+    res.json(worker);
+  } catch (error) {
+    res.status(404).json({ error: { message: error.message, type: 'healthcheck_failed' } });
+  }
+});
+
 app.post('/v1/workers', requireAdminKey, async (req, res) => {
   try {
     const worker = await registry.add(req.body);
@@ -107,9 +133,12 @@ const server = app.listen(config.port, config.host, () => {
   console.log(`default model: ${config.defaultModel}`);
   console.log(`worker registry backend: ${config.workerRegistryBackend}`);
   if (config.workerRegistryBackend === 'file') console.log(`worker registry: ${config.workerRegistryPath}`);
+  console.log(`worker healthcheck: ${config.healthcheck.enabled ? 'enabled' : 'disabled'}`);
+  healthMonitor.start();
 });
 
 async function shutdown() {
+  healthMonitor.stop();
   server.close(async () => {
     if (registry.close) await registry.close();
     process.exit(0);

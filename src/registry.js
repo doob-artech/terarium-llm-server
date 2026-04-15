@@ -12,13 +12,24 @@ export function normalizeWorker(raw) {
     defaultModel: raw.defaultModel || raw.default_model ? String(raw.defaultModel || raw.default_model) : '',
     concurrency: Math.max(1, Number.parseInt(raw.concurrency, 10) || 1),
     enabled: raw.enabled !== false,
-    apiKey: raw.apiKey || raw.api_key ? String(raw.apiKey || raw.api_key) : ''
+    apiKey: raw.apiKey || raw.api_key ? String(raw.apiKey || raw.api_key) : '',
+    healthStatus: raw.healthStatus || raw.health_status ? String(raw.healthStatus || raw.health_status) : 'unknown',
+    healthReason: raw.healthReason || raw.health_reason ? String(raw.healthReason || raw.health_reason) : '',
+    lastHealthCheckAt:
+      raw.lastHealthCheckAt || raw.last_health_check_at
+        ? new Date(raw.lastHealthCheckAt || raw.last_health_check_at).toISOString()
+        : null,
+    consecutiveFailures: Number.parseInt(raw.consecutiveFailures || raw.consecutive_failures, 10) || 0,
+    consecutiveSuccesses: Number.parseInt(raw.consecutiveSuccesses || raw.consecutive_successes, 10) || 0
   };
 
   if (!worker.id) throw new Error('worker.id is required');
   if (!worker.baseUrl) throw new Error(`worker ${worker.id} baseUrl is required`);
   if (!['ollama', 'openai-compatible'].includes(worker.type)) {
     throw new Error(`worker ${worker.id} type must be ollama or openai-compatible`);
+  }
+  if (!['unknown', 'healthy', 'unhealthy'].includes(worker.healthStatus)) {
+    worker.healthStatus = 'unknown';
   }
   return worker;
 }
@@ -32,7 +43,8 @@ function publicWorker(worker, runtime = {}) {
     failed: runtime.failed || 0,
     lastSuccessAt: runtime.lastSuccessAt || null,
     lastErrorAt: runtime.lastErrorAt || null,
-    lastError: runtime.lastError || null
+    lastError: runtime.lastError || null,
+    available: worker.enabled && worker.healthStatus !== 'unhealthy'
   };
 }
 
@@ -58,6 +70,7 @@ class BaseWorkerRegistry {
   listEnabledForModel(model) {
     return this.workers.filter((worker) => {
       if (!worker.enabled) return false;
+      if (worker.healthStatus === 'unhealthy') return false;
       if (!worker.models.length) return true;
       return worker.models.includes(model);
     });
@@ -93,6 +106,14 @@ class BaseWorkerRegistry {
 
   getRuntime(id) {
     return this.runtime.get(id) || { active: 0, completed: 0, failed: 0 };
+  }
+
+  applyHealth(id, patch) {
+    const worker = this.get(id);
+    if (!worker) throw new Error(`worker ${id} not found`);
+    Object.assign(worker, patch, { lastHealthCheckAt: new Date().toISOString() });
+    this.ensureRuntime(worker);
+    return publicWorker(worker, this.runtime.get(id));
   }
 }
 
@@ -146,6 +167,12 @@ class FileWorkerRegistry extends BaseWorkerRegistry {
     this.save();
     return publicWorker(removed);
   }
+
+  async updateHealth(id, patch) {
+    const worker = this.applyHealth(id, patch);
+    this.save();
+    return worker;
+  }
 }
 
 class PostgresWorkerRegistry extends BaseWorkerRegistry {
@@ -173,10 +200,20 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         concurrency integer NOT NULL DEFAULT 1 CHECK (concurrency > 0),
         enabled boolean NOT NULL DEFAULT true,
         api_key text NOT NULL DEFAULT '',
+        health_status text NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('unknown', 'healthy', 'unhealthy')),
+        health_reason text NOT NULL DEFAULT '',
+        last_health_check_at timestamptz,
+        consecutive_failures integer NOT NULL DEFAULT 0,
+        consecutive_successes integer NOT NULL DEFAULT 0,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_status text NOT NULL DEFAULT 'unknown'");
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_reason text NOT NULL DEFAULT ''");
+    await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS last_health_check_at timestamptz');
+    await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_failures integer NOT NULL DEFAULT 0');
+    await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_successes integer NOT NULL DEFAULT 0');
 
     const count = await this.pool.query('SELECT count(*)::int AS count FROM llm_workers');
     if (count.rows[0].count === 0) {
@@ -190,7 +227,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
 
   async reload() {
     const result = await this.pool.query(`
-      SELECT id, name, type, base_url, models, default_model, concurrency, enabled, api_key
+      SELECT
+        id, name, type, base_url, models, default_model, concurrency, enabled, api_key,
+        health_status, health_reason, last_health_check_at, consecutive_failures, consecutive_successes
       FROM llm_workers
       ORDER BY id
     `);
@@ -256,6 +295,31 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     return publicWorker(existing);
   }
 
+  async updateHealth(id, patch) {
+    const worker = this.applyHealth(id, patch);
+    await this.pool.query(
+      `
+        UPDATE llm_workers SET
+          health_status = $2,
+          health_reason = $3,
+          last_health_check_at = $4,
+          consecutive_failures = $5,
+          consecutive_successes = $6,
+          updated_at = now()
+        WHERE id = $1
+      `,
+      [
+        id,
+        worker.healthStatus,
+        worker.healthReason,
+        worker.lastHealthCheckAt,
+        worker.consecutiveFailures,
+        worker.consecutiveSuccesses
+      ]
+    );
+    return worker;
+  }
+
   async close() {
     await this.pool.end();
   }
@@ -266,4 +330,3 @@ export function createWorkerRegistry() {
   if (config.workerRegistryBackend === 'file') return new FileWorkerRegistry();
   throw new Error(`Unsupported WORKER_REGISTRY_BACKEND: ${config.workerRegistryBackend}`);
 }
-
