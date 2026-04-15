@@ -1,0 +1,145 @@
+services:
+  ollama-gpu-0:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-0
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "0"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-1:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-1
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "1"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-2:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-2
+    restart: unless-stopped
+    ports:
+      - "11436:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "2"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-3:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-3
+    restart: unless-stopped
+    ports:
+      - "11437:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "3"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-4:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-4
+    restart: unless-stopped
+    ports:
+      - "11438:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "4"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-5:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-5
+    restart: unless-stopped
+    ports:
+      - "11439:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "5"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5"]
+              capabilities: ["gpu"]
+
+  ollama-gpu-6:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu-6
+    restart: unless-stopped
+    ports:
+      - "11440:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      NVIDIA_VISIBLE_DEVICES: "6"
+    volumes:
+      - ollama_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: ["gpu"]
+
+volumes:
+  ollama_models:
+    name: terarium_ollama_models
+
