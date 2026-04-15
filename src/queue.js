@@ -11,6 +11,7 @@ export class LlmQueue {
     this.lastSuccessAt = null;
     this.lastErrorAt = null;
     this.lastError = null;
+    this.samples = [];
   }
 
   enqueueChatCompletion(body) {
@@ -114,5 +115,26 @@ export class LlmQueue {
       }))
     };
   }
-}
 
+  sample() {
+    const now = Date.now();
+    const item = {
+      at: new Date(now).toISOString(),
+      atMs: now,
+      pending: this.pending.length,
+      running: this.running.size,
+      capacity: this.registry.listPublic().reduce((sum, worker) => {
+        if (!worker.available) return sum;
+        return sum + Number(worker.concurrency || 0);
+      }, 0)
+    };
+    this.samples.push(item);
+    this.samples = this.samples.filter((sample) => now - sample.atMs <= 10 * 60 * 1000);
+    return item;
+  }
+
+  recentSamples(windowMs) {
+    const cutoff = Date.now() - windowMs;
+    return this.samples.filter((sample) => sample.atMs >= cutoff);
+  }
+}

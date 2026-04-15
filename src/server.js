@@ -4,12 +4,14 @@ import { requireAdminKey, requireClientKey } from './auth.js';
 import { createWorkerRegistry } from './registry.js';
 import { LlmQueue } from './queue.js';
 import { WorkerHealthMonitor } from './health.js';
+import { Autoscaler } from './autoscaler.js';
 
 const app = express();
 const registry = createWorkerRegistry();
 await registry.init();
 const queue = new LlmQueue(registry);
 const healthMonitor = new WorkerHealthMonitor(registry, { onWorkerRecovered: () => queue.pump() });
+const autoscaler = new Autoscaler({ queue, registry, healthMonitor });
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -60,8 +62,29 @@ app.get('/v1/models', requireClientKey, (req, res) => {
   });
 });
 
+app.get('/v1/public/status', (req, res) => {
+  res.json({
+    ok: true,
+    queue: queue.status(),
+    health: healthMonitor.status(),
+    autoscale: autoscaler.status()
+  });
+});
+
 app.get('/v1/queue/status', requireAdminKey, (req, res) => {
   res.json(queue.status());
+});
+
+app.get('/v1/autoscale/status', requireAdminKey, (req, res) => {
+  res.json(autoscaler.status());
+});
+
+app.post('/v1/autoscale/tick', requireAdminKey, async (req, res) => {
+  try {
+    res.json(await autoscaler.tick());
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'autoscale_failed' } });
+  }
 });
 
 app.get('/v1/workers', requireAdminKey, (req, res) => {
@@ -135,10 +158,12 @@ const server = app.listen(config.port, config.host, () => {
   if (config.workerRegistryBackend === 'file') console.log(`worker registry: ${config.workerRegistryPath}`);
   console.log(`worker healthcheck: ${config.healthcheck.enabled ? 'enabled' : 'disabled'}`);
   healthMonitor.start();
+  autoscaler.start();
 });
 
 async function shutdown() {
   healthMonitor.stop();
+  autoscaler.stop();
   server.close(async () => {
     if (registry.close) await registry.close();
     process.exit(0);

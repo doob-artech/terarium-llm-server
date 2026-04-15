@@ -20,7 +20,10 @@ export function normalizeWorker(raw) {
         ? new Date(raw.lastHealthCheckAt || raw.last_health_check_at).toISOString()
         : null,
     consecutiveFailures: Number.parseInt(raw.consecutiveFailures || raw.consecutive_failures, 10) || 0,
-    consecutiveSuccesses: Number.parseInt(raw.consecutiveSuccesses || raw.consecutive_successes, 10) || 0
+    consecutiveSuccesses: Number.parseInt(raw.consecutiveSuccesses || raw.consecutive_successes, 10) || 0,
+    provider: raw.provider ? String(raw.provider) : '',
+    providerInstanceId: raw.providerInstanceId || raw.provider_instance_id ? String(raw.providerInstanceId || raw.provider_instance_id) : '',
+    autoscaled: raw.autoscaled === true || raw.autoscaled === 'true'
   };
 
   if (!worker.id) throw new Error('worker.id is required');
@@ -205,6 +208,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         last_health_check_at timestamptz,
         consecutive_failures integer NOT NULL DEFAULT 0,
         consecutive_successes integer NOT NULL DEFAULT 0,
+        provider text NOT NULL DEFAULT '',
+        provider_instance_id text NOT NULL DEFAULT '',
+        autoscaled boolean NOT NULL DEFAULT false,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )
@@ -214,6 +220,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS last_health_check_at timestamptz');
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_failures integer NOT NULL DEFAULT 0');
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_successes integer NOT NULL DEFAULT 0');
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS provider text NOT NULL DEFAULT ''");
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS provider_instance_id text NOT NULL DEFAULT ''");
+    await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS autoscaled boolean NOT NULL DEFAULT false');
 
     const count = await this.pool.query('SELECT count(*)::int AS count FROM llm_workers');
     if (count.rows[0].count === 0) {
@@ -229,7 +238,8 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     const result = await this.pool.query(`
       SELECT
         id, name, type, base_url, models, default_model, concurrency, enabled, api_key,
-        health_status, health_reason, last_health_check_at, consecutive_failures, consecutive_successes
+        health_status, health_reason, last_health_check_at, consecutive_failures, consecutive_successes,
+        provider, provider_instance_id, autoscaled
       FROM llm_workers
       ORDER BY id
     `);
@@ -241,9 +251,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     await this.pool.query(
       `
         INSERT INTO llm_workers
-          (id, name, type, base_url, models, default_model, concurrency, enabled, api_key, updated_at)
+          (id, name, type, base_url, models, default_model, concurrency, enabled, api_key, provider, provider_instance_id, autoscaled, updated_at)
         VALUES
-          ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, now())
+          ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, now())
         ON CONFLICT (id) DO UPDATE SET
           name = excluded.name,
           type = excluded.type,
@@ -253,6 +263,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
           concurrency = excluded.concurrency,
           enabled = excluded.enabled,
           api_key = excluded.api_key,
+          provider = excluded.provider,
+          provider_instance_id = excluded.provider_instance_id,
+          autoscaled = excluded.autoscaled,
           updated_at = now()
       `,
       [
@@ -264,7 +277,10 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         worker.defaultModel,
         worker.concurrency,
         worker.enabled,
-        worker.apiKey
+        worker.apiKey,
+        worker.provider,
+        worker.providerInstanceId,
+        worker.autoscaled
       ]
     );
   }
