@@ -1,5 +1,46 @@
 import { config } from './config.js';
 
+export function gpuCountFromInstance(instance) {
+  const candidates = [
+    instance?.gpu_count,
+    instance?.num_gpus,
+    instance?.gpus,
+    instance?.gpu_num,
+    instance?.n_gpus,
+    instance?.machine?.gpu_count,
+    instance?.machine?.num_gpus
+  ];
+
+  for (const value of candidates) {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const gpuNameList = instance?.gpu_names || instance?.gpu_name;
+  if (Array.isArray(gpuNameList) && gpuNameList.length) return gpuNameList.length;
+  return 1;
+}
+
+export function instanceLabel(instance) {
+  return String(instance?.label || instance?.name || instance?.id || instance?.instance_id || '').trim();
+}
+
+function renderSingleGpuOnstart() {
+  return ['ollama serve &', 'sleep 5', `ollama pull ${config.defaultModel}`, 'wait'].join('\n');
+}
+
+function renderMultiGpuOnstart(gpuCount) {
+  const lines = ['set -e'];
+  for (let gpuIndex = 0; gpuIndex < gpuCount; gpuIndex += 1) {
+    const port = config.autoscale.ollamaBasePort + gpuIndex;
+    lines.push(`CUDA_VISIBLE_DEVICES=${gpuIndex} OLLAMA_HOST=0.0.0.0:${port} ollama serve >/tmp/ollama-${gpuIndex}.log 2>&1 &`);
+  }
+  lines.push('sleep 8');
+  lines.push(`ollama pull ${config.defaultModel}`);
+  lines.push('wait');
+  return lines.join('\n');
+}
+
 function requireVastKey() {
   if (!config.autoscale.apiKey) throw new Error('VAST_API_KEY is required for Vast.ai autoscaling');
 }
@@ -70,23 +111,23 @@ export function normalizeOffer(offer) {
 
 export class VastProvider {
   async searchBestOffer() {
-    const query = {
+    const body = {
+      limit: 50,
+      type: 'ondemand',
       verified: { eq: true },
       rentable: { eq: true },
+      rented: { eq: false },
       external: { eq: false },
       gpu_ram: { gte: config.autoscale.minGpuVramGb * 1024, lte: config.autoscale.maxGpuVramGb * 1024 },
       reliability2: { gte: config.autoscale.minReliability },
       dph_total: { lte: config.autoscale.maxDollarsPerHour },
-      disk_space: { gte: config.autoscale.diskGb }
+      disk_space: { gte: config.autoscale.diskGb },
+      order: [['dph_total', 'asc']]
     };
 
     const data = await vastFetch('/bundles/', {
       method: 'POST',
-      body: JSON.stringify({
-        q: query,
-        order: [['dph_total', 'asc']],
-        limit: 50
-      })
+      body: JSON.stringify(body)
     });
 
     const offers = Array.isArray(data?.offers) ? data.offers : Array.isArray(data?.bundles) ? data.bundles : [];
@@ -97,24 +138,35 @@ export class VastProvider {
 
   async createInstance(offer) {
     const offerId = offer.id;
-    const onstart = [
-      'ollama serve &',
-      'sleep 5',
-      `ollama pull ${config.defaultModel}`,
-      'wait'
-    ].join('\n');
+    const useTemplate = Boolean(config.autoscale.templateHashId);
+    const gpuCount = gpuCountFromInstance(offer.raw || offer);
+    const usePortSplit = !useTemplate && config.autoscale.registerPerGpu && gpuCount > 1;
+    const onstart = useTemplate
+      ? ''
+      : usePortSplit
+        ? renderMultiGpuOnstart(gpuCount)
+        : renderSingleGpuOnstart();
+    const ports = useTemplate
+      ? [`${config.autoscale.routerPort}/tcp`]
+      : usePortSplit
+        ? Array.from({ length: gpuCount }, (_, index) => `${config.autoscale.ollamaBasePort + index}/tcp`)
+        : [`${config.autoscale.instancePort}/tcp`];
 
     const body = {
       client_id: 'me',
       image: config.autoscale.dockerImage,
       disk: config.autoscale.diskGb,
       label: `terarium-llm-${Date.now()}`,
-      onstart,
       env: {
-        OLLAMA_HOST: `0.0.0.0:${config.autoscale.instancePort}`
+        OLLAMA_HOST: `0.0.0.0:${config.autoscale.instancePort}`,
+        TERARIUM_WORKER_MODEL: config.defaultModel,
+        TERARIUM_ROUTER_PORT: String(config.autoscale.routerPort),
+        TERARIUM_OLLAMA_BASE_PORT: String(config.autoscale.ollamaBasePort),
+        TERARIUM_REGISTER_PER_GPU: String(config.autoscale.registerPerGpu)
       },
-      ports: [`${config.autoscale.instancePort}/tcp`]
+      ports
     };
+    if (onstart) body.onstart = onstart;
     if (config.autoscale.templateHashId) body.template_hash_id = config.autoscale.templateHashId;
 
     return vastFetch(`/asks/${offerId}/`, {
@@ -132,4 +184,3 @@ export class VastProvider {
     return Array.isArray(data?.instances) ? data.instances : [];
   }
 }
-

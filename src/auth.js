@@ -32,3 +32,14 @@ export function requireAdminKey(req, res, next) {
   });
 }
 
+export function requireInstanceKey(req, res, next) {
+  const token = extractBearer(req);
+  if (config.instanceKey && token === config.instanceKey) return next();
+
+  return res.status(401).json({
+    error: {
+      message: 'Missing or invalid instance key',
+      type: 'authentication_error'
+    }
+  });
+}
