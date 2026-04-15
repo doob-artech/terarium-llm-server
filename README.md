@@ -38,6 +38,16 @@ terarium-world-server
 
 `/home/ubuntu/Documents/...`는 개발/작업 디렉토리로는 괜찮지만, 계속 떠 있어야 하는 서비스 관리 위치로는 `/srv`가 더 명확합니다.
 
+## 배포
+
+`terarium-llm-server`는 현재 `terarium-deploy` 스택 안에서 이 윈도우 머신의 Docker Desktop으로 함께 빌드/실행되고 있습니다.
+
+- 로컬 운영 경로: `D:\doob\terarium-llm-server`
+- 실행 진입점: `terarium-deploy/start-terarium-stack.ps1`
+- 외부 API 주소: `https://llm.team-doob.com`
+
+리눅스 단독 운영으로 분리할 때는 이 README의 `/srv/terarium-llm-server` 구조를 그대로 적용하면 됩니다.
+
 ## 빠른 시작
 
 ```bash
