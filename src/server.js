@@ -1,11 +1,12 @@
 import express from 'express';
 import { config } from './config.js';
 import { requireAdminKey, requireClientKey } from './auth.js';
-import { WorkerRegistry } from './registry.js';
+import { createWorkerRegistry } from './registry.js';
 import { LlmQueue } from './queue.js';
 
 const app = express();
-const registry = new WorkerRegistry();
+const registry = createWorkerRegistry();
+await registry.init();
 const queue = new LlmQueue(registry);
 
 app.use(express.json({ limit: '2mb' }));
@@ -65,9 +66,9 @@ app.get('/v1/workers', requireAdminKey, (req, res) => {
   res.json({ workers: registry.listPublic() });
 });
 
-app.post('/v1/workers', requireAdminKey, (req, res) => {
+app.post('/v1/workers', requireAdminKey, async (req, res) => {
   try {
-    const worker = registry.add(req.body);
+    const worker = await registry.add(req.body);
     queue.pump();
     res.status(201).json(worker);
   } catch (error) {
@@ -75,9 +76,9 @@ app.post('/v1/workers', requireAdminKey, (req, res) => {
   }
 });
 
-app.patch('/v1/workers/:id', requireAdminKey, (req, res) => {
+app.patch('/v1/workers/:id', requireAdminKey, async (req, res) => {
   try {
-    const worker = registry.update(req.params.id, req.body);
+    const worker = await registry.update(req.params.id, req.body);
     queue.pump();
     res.json(worker);
   } catch (error) {
@@ -85,9 +86,9 @@ app.patch('/v1/workers/:id', requireAdminKey, (req, res) => {
   }
 });
 
-app.delete('/v1/workers/:id', requireAdminKey, (req, res) => {
+app.delete('/v1/workers/:id', requireAdminKey, async (req, res) => {
   try {
-    const worker = registry.remove(req.params.id);
+    const worker = await registry.remove(req.params.id);
     res.json(worker);
   } catch (error) {
     res.status(404).json({ error: { message: error.message, type: 'not_found' } });
@@ -104,9 +105,16 @@ app.use((err, req, res, next) => {
 const server = app.listen(config.port, config.host, () => {
   console.log(`terarium-llm-server listening on ${config.host}:${config.port}`);
   console.log(`default model: ${config.defaultModel}`);
-  console.log(`worker registry: ${config.workerRegistryPath}`);
+  console.log(`worker registry backend: ${config.workerRegistryBackend}`);
+  if (config.workerRegistryBackend === 'file') console.log(`worker registry: ${config.workerRegistryPath}`);
 });
 
-process.on('SIGINT', () => server.close(() => process.exit(0)));
-process.on('SIGTERM', () => server.close(() => process.exit(0)));
+async function shutdown() {
+  server.close(async () => {
+    if (registry.close) await registry.close();
+    process.exit(0);
+  });
+}
 
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

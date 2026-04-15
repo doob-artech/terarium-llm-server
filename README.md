@@ -74,9 +74,46 @@ sudo systemctl enable --now terarium-llm-server
 | `WORKER_REGISTRY_PATH` | 워커 JSON 저장 경로 |
 | `ALLOW_NO_AUTH` | 개발용 무인증 허용 여부 |
 
+## 서버 정보 저장 방식
+
+운영 기본값은 PostgreSQL입니다.
+
+| 정보 | 저장 위치 |
+| --- | --- |
+| API 키, 기본 모델, DB 접속 정보 | `.env` |
+| LLM 워커 서버 목록 | PostgreSQL `llm_workers` 테이블 |
+| 로컬 fallback 워커 목록 | `data/workers.json` |
+
+`WORKER_REGISTRY_BACKEND=postgres`이면 서버 시작 시 `llm_workers` 테이블을 자동 생성합니다. 테이블이 비어 있으면 `data/workers.example.json`의 기본 워커를 seed합니다.
+
+로컬 파일 방식이 필요하면 `.env`에서 다음처럼 바꾸면 됩니다.
+
+```env
+WORKER_REGISTRY_BACKEND=file
+WORKER_REGISTRY_PATH=./data/workers.json
+```
+
+## DB 스키마
+
+```sql
+CREATE TABLE IF NOT EXISTS llm_workers (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  type text NOT NULL CHECK (type IN ('ollama', 'openai-compatible')),
+  base_url text NOT NULL,
+  models jsonb NOT NULL DEFAULT '[]'::jsonb,
+  default_model text NOT NULL DEFAULT '',
+  concurrency integer NOT NULL DEFAULT 1 CHECK (concurrency > 0),
+  enabled boolean NOT NULL DEFAULT true,
+  api_key text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
 ## 워커 설정
 
-현재 165.194.161.38에서 Ollama가 떠 있고 7개 병렬 슬롯을 쓸 수 있다면 다음처럼 설정합니다.
+현재 165.194.161.38에서 Ollama가 떠 있고 7개 병렬 슬롯을 쓸 수 있다면 DB에는 다음 값이 들어갑니다.
 
 ```json
 [
@@ -123,7 +160,7 @@ curl -X POST http://localhost:18200/v1/chat/completions \
 
 ### 관리자 API
 
-관리자 API는 `LLM_SERVER_ADMIN_KEY` Bearer 토큰이 필요합니다.
+관리자 API는 `LLM_SERVER_ADMIN_KEY` Bearer 토큰이 필요합니다. `WORKER_REGISTRY_BACKEND=postgres`에서는 아래 API가 곧바로 `llm_workers` 테이블을 변경합니다.
 
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
@@ -155,8 +192,9 @@ curl -X POST http://localhost:18200/v1/workers \
 
 - `REQUEST_TIMEOUT_MS=0`으로 두면 앱이 임의로 LLM 요청을 끊지 않습니다.
 - Cloudflare Tunnel, Nginx, Ollama 자체 timeout은 별도로 확인해야 합니다.
-- 큐는 프로세스 메모리 기반입니다. 서버 재시작 시 대기 중인 요청은 사라집니다.
-- 다음 단계에서 Redis/PostgreSQL 기반 영속 큐로 바꾸면 멀티 인스턴스 스케일링이 쉬워집니다.
+- 워커 목록은 PostgreSQL에 저장됩니다.
+- 큐는 아직 프로세스 메모리 기반입니다. 서버 재시작 시 대기 중인 요청은 사라집니다.
+- 다음 단계에서 Redis 기반 영속 큐로 바꾸면 멀티 인스턴스 스케일링이 쉬워집니다.
 
 ## 다음 확장 방향
 

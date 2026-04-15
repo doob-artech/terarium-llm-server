@@ -36,5 +36,14 @@ export const config = {
   allowNoAuth: parseBool(process.env.ALLOW_NO_AUTH, false),
   apiKeys: splitKeys(process.env.LLM_SERVER_API_KEYS),
   adminKey: process.env.LLM_SERVER_ADMIN_KEY || '',
-  workerRegistryPath: resolvePath(process.env.WORKER_REGISTRY_PATH || './data/workers.json')
+  workerRegistryBackend: process.env.WORKER_REGISTRY_BACKEND || 'file',
+  workerRegistryPath: resolvePath(process.env.WORKER_REGISTRY_PATH || './data/workers.json'),
+  postgres: {
+    host: process.env.POSTGRES_HOST || '127.0.0.1',
+    port: parseIntEnv(process.env.POSTGRES_PORT, 5432),
+    database: process.env.POSTGRES_DB || 'terarium_memory',
+    user: process.env.POSTGRES_USER || 'terarium',
+    password: process.env.POSTGRES_PASSWORD || '',
+    ssl: parseBool(process.env.POSTGRES_SSL, false)
+  }
 };
