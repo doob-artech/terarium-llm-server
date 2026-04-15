@@ -1,0 +1,11 @@
+services:
+  terarium-llm-server:
+    build: .
+    container_name: terarium-llm-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "18200:18200"
+    volumes:
+      - ./data:/app/data

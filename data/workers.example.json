@@ -1,0 +1,13 @@
+[
+  {
+    "id": "vilab-ollama-165-194-161-38",
+    "name": "165.194.161.38 Ollama",
+    "type": "ollama",
+    "baseUrl": "http://165.194.161.38:11434",
+    "models": ["gemma4:e4b"],
+    "defaultModel": "gemma4:e4b",
+    "concurrency": 7,
+    "enabled": true,
+    "apiKey": ""
+  }
+]
