@@ -1,52 +1,57 @@
 # terarium-llm-server
 
-Terarium에서 사용하는 LLM 연산 서버를 큐 기반으로 관리하는 프로젝트입니다. `world-server`, 튜토리얼, 배치 도구는 이 서버의 OpenAI-compatible API(`/v1/chat/completions`)만 호출하고, 실제 Ollama/GPU 서버 선택과 병렬 실행은 이 프로젝트가 담당합니다.
+Terarium 월드에서 사용하는 LLM 요청 큐, 워커 라우팅, 헬스체크, 오토스케일링을 담당하는 서버입니다.
+
+외부 클라이언트는 이 서버의 OpenAI-compatible API만 호출하고, 실제 추론은 내부 Ollama 또는 OpenAI-compatible 워커로 분산됩니다.
 
 ## 역할
 
-- `world-server`가 보내는 행동 판단/대화 판단 요청을 큐에 넣습니다.
-- 등록된 LLM 워커의 동시 처리 수를 기준으로 요청을 분산합니다.
-- 워커 작동 여부를 주기적으로 검사하고, 죽은 워커는 큐 대상에서 자동 제외합니다.
-- 큐 적체가 지속되면 Vast.ai에서 저렴한 GPU 인스턴스를 찾고 자동 확장 판단을 내립니다.
-- Ollama native API(`/api/chat`)와 OpenAI-compatible upstream(`/v1/chat/completions`)을 둘 다 지원합니다.
-- 클라이언트 API 키와 관리자 API 키를 분리합니다.
-- 현재 기본 모델은 `gemma4:e4b`입니다.
+- `world-server`, 튜토리얼, 배치 도구의 LLM 요청을 큐로 받습니다.
+- 모델별로 사용 가능한 워커를 찾아 병렬 분산합니다.
+- 워커 헬스체크를 수행하고, 장애 워커를 자동 제외합니다.
+- Vast.ai 인스턴스 자동 등록과 오토스케일링을 지원합니다.
+- 공개 API와 관리자 API를 분리합니다.
 
-## 현재 권장 구조
-
-`llm.team-doob.com`은 이 서버를 바라보게 두는 것이 맞습니다.
+## 권장 구조
 
 ```text
 terarium-world-server
-  -> https://llm.team-doob.com/v1/chat/completions
-  -> terarium-llm-server queue
-  -> Ollama worker / GPU server
+  -> terarium-llm-server (/v1/chat/completions)
+  -> private worker endpoints over Tailscale / private network
+  -> Ollama / OpenAI-compatible inference workers
 ```
 
-기존 `world-server`의 API 구조는 유지하는 편이 좋습니다. 이미 OpenAI-compatible 형태라서 모델/서버 교체와 큐 도입을 `world-server` 수정 없이 처리할 수 있습니다.
+중요:
 
-## 서버 배치 위치
+- `world-server` 는 `terarium-llm-server` 만 호출해야 합니다.
+- `llm_workers.base_url` 은 Cloudflare 공개 주소가 아니라 내부망 주소를 써야 합니다.
+- 현재 운영 패턴에서는 `100.80.215.107:18000/gpu/{index}` 같은 Tailscale 라우터 주소를 사용합니다.
+- Cloudflare `llm.team-doob.com` 은 외부 ingress 용도로만 두는 것이 맞습니다.
 
-운영 서버에서는 `/srv/terarium-llm-server`를 권장합니다.
+## 왜 Cloudflare upstream을 피해야 하나
 
-| 경로 | 용도 |
-| --- | --- |
-| `/srv/terarium-llm-server` | 서비스 코드와 Docker Compose |
-| `/srv/terarium-llm-server/.env` | 서비스 환경 변수 |
-| `/srv/terarium-llm-server/data/workers.json` | 워커 레지스트리 |
-| `journald` 또는 Docker logs | 실행 로그 |
+긴 추론 요청을 Cloudflare를 거쳐 직접 워커에 보내면 `524 timeout` 이 발생할 수 있습니다.
 
-`/home/ubuntu/Documents/...`는 개발/작업 디렉토리로는 괜찮지만, 계속 떠 있어야 하는 서비스 관리 위치로는 `/srv`가 더 명확합니다.
+잘못된 예:
 
-## 배포
+```json
+{
+  "baseUrl": "https://llm.team-doob.com/gpu/0"
+}
+```
 
-`terarium-llm-server`는 현재 `terarium-deploy` 스택 안에서 이 윈도우 머신의 Docker Desktop으로 함께 빌드/실행되고 있습니다.
+권장 예:
 
-- 로컬 운영 경로: `D:\doob\terarium-llm-server`
-- 실행 진입점: `terarium-deploy/start-terarium-stack.ps1`
-- 외부 API 주소: `https://llm.team-doob.com`
+```json
+{
+  "baseUrl": "http://100.80.215.107:18000/gpu/0"
+}
+```
 
-리눅스 단독 운영으로 분리할 때는 이 README의 `/srv/terarium-llm-server` 구조를 그대로 적용하면 됩니다.
+다른 서버를 붙일 때도 같은 원칙입니다.
+
+- 외부 공개 DNS: `llm.team-doob.com`
+- 내부 워커 주소: `http://<tailscale-or-private-host>:<port>` 또는 `http://<tailscale-or-private-host>:18000/gpu/<index>`
 
 ## 빠른 시작
 
@@ -65,7 +70,7 @@ cp data/workers.example.json data/workers.json
 docker compose up --build -d
 ```
 
-systemd로 관리할 때:
+systemd:
 
 ```bash
 sudo cp ops/systemd/terarium-llm-server.service /etc/systemd/system/
@@ -78,271 +83,106 @@ sudo systemctl enable --now terarium-llm-server
 | 변수 | 설명 |
 | --- | --- |
 | `PORT` | 서버 포트, 기본 `18200` |
-| `HOST` | 바인딩 호스트, 기본 `0.0.0.0` |
-| `LLM_SERVER_API_KEYS` | 클라이언트용 Bearer 키 목록, 쉼표 구분 |
-| `LLM_SERVER_ADMIN_KEY` | 워커/큐 관리용 Bearer 키 |
-| `LLM_SERVER_INSTANCE_KEY` | 외부 GPU 인스턴스의 자동 등록/heartbeat용 Bearer 키 |
-| `DEFAULT_MODEL` | 요청에 모델이 없을 때 사용할 모델, 기본 `gemma4:e4b` |
-| `REQUEST_TIMEOUT_MS` | upstream 요청 타임아웃. `0`이면 앱 레벨 타임아웃 없음 |
-| `WORKER_HEALTHCHECK_ENABLED` | 워커 자동 헬스체크 활성화 여부 |
-| `WORKER_HEALTHCHECK_INTERVAL_MS` | 워커 헬스체크 주기 |
-| `WORKER_HEALTHCHECK_TIMEOUT_MS` | 워커 헬스체크 요청 타임아웃 |
-| `WORKER_UNHEALTHY_AFTER_FAILURES` | 몇 번 연속 실패하면 큐 대상에서 제외할지 |
-| `WORKER_HEALTHY_AFTER_SUCCESSES` | 몇 번 연속 성공하면 다시 큐 대상에 넣을지 |
-| `WORKER_REGISTRY_PATH` | 워커 JSON 저장 경로 |
-| `INSTANCE_REGISTRY_PATH` | 인스턴스 JSON 저장 경로 |
-| `AUTOSCALE_ENABLED` | 자동 인스턴스 생성/삭제 활성화 |
-| `AUTOSCALE_DRY_RUN` | 실제 과금 액션 없이 판단만 수행 |
-| `AUTOSCALE_SUSTAINED_BACKLOG_MS` | 큐 적체가 얼마나 지속되어야 scale-up할지 |
-| `AUTOSCALE_MIN_GPU_VRAM_GB` | Vast.ai 후보 최소 VRAM |
-| `AUTOSCALE_MAX_GPU_VRAM_GB` | Vast.ai 후보 최대 VRAM. 오버스펙 방지용 |
-| `AUTOSCALE_MAX_DOLLARS_PER_HOUR` | 후보 최대 시간당 비용 |
-| `VAST_API_KEY` | Vast.ai API 키. 저장소에 커밋 금지 |
-| `VAST_TEMPLATE_HASH_ID` | 사용할 Vast.ai template hash |
-| `VAST_DOCKER_IMAGE` | template 미사용 시 기본 이미지 |
-| `AUTOSCALE_ROUTER_PORT` | Vast 멀티 GPU 템플릿이 외부에 노출할 단일 라우터 포트 |
-| `AUTOSCALE_OLLAMA_BASE_PORT` | 템플릿 내부에서 GPU별 Ollama가 사용할 시작 포트 |
-| `AUTOSCALE_REGISTER_PER_GPU` | `true`면 인스턴스 1대를 GPU worker N개로 등록 |
-| `INSTANCE_MONITOR_ENABLED` | 인스턴스 heartbeat/cleanup monitor 활성화 |
-| `INSTANCE_STALE_AFTER_MS` | 이 시간 이상 heartbeat가 없으면 stale 처리 |
-| `INSTANCE_CLEANUP_AFTER_MS` | 이 시간 이상 heartbeat가 없으면 자동 정리 |
-| `ALLOW_NO_AUTH` | 개발용 무인증 허용 여부 |
+| `HOST` | 바인드 주소, 기본 `0.0.0.0` |
+| `LLM_SERVER_API_KEYS` | 클라이언트 요청용 Bearer 토큰 목록 |
+| `LLM_SERVER_ADMIN_KEY` | 관리자 API Bearer 토큰 |
+| `LLM_SERVER_INSTANCE_KEY` | 외부 인스턴스 자동 등록용 Bearer 토큰 |
+| `DEFAULT_MODEL` | 기본 모델, 기본 `gemma4:e4b` |
+| `REQUEST_TIMEOUT_MS` | 애플리케이션 레벨 요청 타임아웃, `0` 이면 제한 없음 |
+| `WORKER_HEALTHCHECK_ENABLED` | 워커 자동 헬스체크 여부 |
+| `WORKER_HEALTHCHECK_INTERVAL_MS` | 헬스체크 주기 |
+| `WORKER_HEALTHCHECK_TIMEOUT_MS` | 헬스체크 요청 타임아웃 |
+| `WORKER_UNHEALTHY_AFTER_FAILURES` | 연속 실패 시 unhealthy 전환 기준 |
+| `WORKER_HEALTHY_AFTER_SUCCESSES` | 연속 성공 시 healthy 복귀 기준 |
+| `WORKER_REGISTRY_BACKEND` | `postgres` 또는 `file` |
+| `WORKER_REGISTRY_PATH` | 파일 레지스트리 경로 |
+| `INSTANCE_REGISTRY_PATH` | 파일 인스턴스 레지스트리 경로 |
+| `POSTGRES_HOST` | Postgres 호스트 |
+| `POSTGRES_PORT` | Postgres 포트 |
+| `POSTGRES_DB` | Postgres DB 이름 |
+| `POSTGRES_USER` | Postgres 유저 |
+| `POSTGRES_PASSWORD` | Postgres 비밀번호 |
+| `POSTGRES_SSL` | Postgres SSL 사용 여부 |
+| `AUTOSCALE_ENABLED` | 오토스케일 활성화 여부 |
+| `AUTOSCALE_DRY_RUN` | 실제 생성/삭제 없이 판단만 수행 |
+| `AUTOSCALE_MAX_WORKERS` | 최대 워커 수 |
+| `AUTOSCALE_BACKLOG_PER_WORKER` | 워커 1개당 허용 backlog 기준 |
+| `AUTOSCALE_MIN_GPU_VRAM_GB` | Vast 후보 최소 VRAM |
+| `AUTOSCALE_MAX_GPU_VRAM_GB` | Vast 후보 최대 VRAM |
+| `AUTOSCALE_MAX_DOLLARS_PER_HOUR` | Vast 후보 시간당 최대 비용 |
+| `VAST_API_KEY` | Vast.ai API 키 |
+| `VAST_TEMPLATE_HASH_ID` | Vast 템플릿 hash |
+| `VAST_DOCKER_IMAGE` | Vast 인스턴스 기본 Docker 이미지 |
+| `ALLOW_NO_AUTH` | 무인증 허용 여부 |
 
-## 서버 정보 저장 방식
+## 워커 설정 원칙
 
-운영 기본값은 PostgreSQL입니다.
+`WORKER_REGISTRY_BACKEND=postgres` 이면 `llm_workers` 테이블이 실제 소스입니다.
 
-| 정보 | 저장 위치 |
-| --- | --- |
-| API 키, 기본 모델, DB 접속 정보 | `.env` |
-| LLM 워커 서버 목록 | PostgreSQL `llm_workers` 테이블 |
-| LLM 인스턴스 목록/heartbeat | PostgreSQL `llm_instances` 테이블 |
-| 로컬 fallback 워커 목록 | `data/workers.json` |
+테이블이 비어 있을 때만 `data/workers.example.json` 으로 seed 합니다.
 
-`WORKER_REGISTRY_BACKEND=postgres`이면 서버 시작 시 `llm_workers` 테이블을 자동 생성합니다. 테이블이 비어 있으면 `data/workers.example.json`의 기본 워커를 seed합니다.
+즉 이 파일은 매우 중요합니다.
 
-로컬 파일 방식이 필요하면 `.env`에서 다음처럼 바꾸면 됩니다.
+- 여기 값이 잘못되면 새 환경에서 같은 문제가 재발합니다.
+- Cloudflare 공개 주소가 들어 있으면 안 됩니다.
+- Tailscale 또는 private endpoint 를 넣어야 합니다.
 
-```env
-WORKER_REGISTRY_BACKEND=file
-WORKER_REGISTRY_PATH=./data/workers.json
-```
-
-## DB 스키마
-
-```sql
-CREATE TABLE IF NOT EXISTS llm_workers (
-  id text PRIMARY KEY,
-  name text NOT NULL,
-  type text NOT NULL CHECK (type IN ('ollama', 'openai-compatible')),
-  base_url text NOT NULL,
-  models jsonb NOT NULL DEFAULT '[]'::jsonb,
-  default_model text NOT NULL DEFAULT '',
-  concurrency integer NOT NULL DEFAULT 1 CHECK (concurrency > 0),
-  enabled boolean NOT NULL DEFAULT true,
-  api_key text NOT NULL DEFAULT '',
-  health_status text NOT NULL DEFAULT 'unknown',
-  health_reason text NOT NULL DEFAULT '',
-  last_health_check_at timestamptz,
-  consecutive_failures integer NOT NULL DEFAULT 0,
-  consecutive_successes integer NOT NULL DEFAULT 0,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-```
-
-```sql
-CREATE TABLE IF NOT EXISTS llm_instances (
-  id text PRIMARY KEY,
-  label text NOT NULL,
-  provider text NOT NULL DEFAULT '',
-  provider_instance_id text NOT NULL DEFAULT '',
-  host text NOT NULL DEFAULT '',
-  public_base_url text NOT NULL DEFAULT '',
-  gpu_count integer NOT NULL DEFAULT 0,
-  autoscaled boolean NOT NULL DEFAULT false,
-  status text NOT NULL DEFAULT 'registered',
-  health_status text NOT NULL DEFAULT 'unknown',
-  health_reason text NOT NULL DEFAULT '',
-  last_heartbeat_at timestamptz,
-  last_health_check_at timestamptz,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb
-);
-```
-
-## 자동 활성/비활성 판단
-
-`enabled`는 관리자가 수동으로 켜고 끄는 플래그입니다. 자동 헬스체크는 이 값을 덮어쓰지 않고 `health_status`를 갱신합니다.
-
-| 상태 | 의미 |
-| --- | --- |
-| `enabled=false` | 관리자가 끈 워커. 헬스체크 성공 여부와 관계없이 큐 대상 제외 |
-| `enabled=true`, `health_status=healthy` | 정상 워커. 큐 대상 |
-| `enabled=true`, `health_status=unknown` | 아직 판단 전. 큐 대상 |
-| `enabled=true`, `health_status=unhealthy` | 자동 비활성 워커. 큐 대상 제외 |
-
-Ollama 워커는 `GET /api/tags`, OpenAI-compatible 워커는 `GET /v1/models`로 헬스체크합니다.
-
-## 워커 설정
-
-현재 165.194.161.38에서 Ollama가 떠 있고 7개 병렬 슬롯을 쓸 수 있다면 DB에는 다음 값이 들어갑니다.
+현재 운영 예시는 다음과 같습니다.
 
 ```json
 [
   {
-    "id": "vilab-ollama-165-194-161-38",
-    "name": "165.194.161.38 Ollama",
-    "type": "ollama",
-    "baseUrl": "http://165.194.161.38:11434",
+    "id": "vilab-gpu-0",
+    "name": "vilab tailscale GPU 0",
+    "type": "openai-compatible",
+    "baseUrl": "http://100.80.215.107:18000/gpu/0",
     "models": ["gemma4:e4b"],
     "defaultModel": "gemma4:e4b",
-    "concurrency": 7,
+    "concurrency": 1,
     "enabled": true,
-    "apiKey": ""
+    "apiKey": "change-me"
   }
 ]
 ```
 
-GPU마다 Ollama 포트가 다르면 워커를 7개로 나누고 각 `concurrency`를 `1`로 두면 됩니다.
-
-Vast.ai autoscale도 같은 철학으로 동작해야 합니다. 인스턴스 1대를 worker 1개로 보지 않고, 멀티 GPU 인스턴스면 아래처럼 GPU별 worker로 분해합니다.
-
-```text
-Vast instance abc123 (4 GPU)
-  -> vast-abc123-gpu0
-  -> vast-abc123-gpu1
-  -> vast-abc123-gpu2
-  -> vast-abc123-gpu3
-```
-
-연결 방식은 두 가지입니다.
-
-- `VAST_TEMPLATE_HASH_ID`가 있으면 외부 1포트 + `/gpu/{index}` 라우터 방식
-- template이 없으면 외부 포트를 GPU 수만큼 열고 직접 분할하는 방식
-
-이 전제를 만족시키는 startup 템플릿은 [ops/vast/README.md](D:\doob\terarium-llm-server\ops\vast\README.md)와 [bootstrap-multigpu.sh](D:\doob\terarium-llm-server\ops\vast\bootstrap-multigpu.sh)에 정리되어 있습니다.
-
-`bootstrap-multigpu.sh`는 아래 값이 주어지면 자기 자신을 `terarium-llm-server`에 자동 등록하고 heartbeat를 계속 보냅니다.
-
-```bash
-TERARIUM_LLM_SERVER_URL=https://llm.team-doob.com
-TERARIUM_INSTANCE_KEY=...
-TERARIUM_INSTANCE_ID=vast-abc123
-TERARIUM_PROVIDER_INSTANCE_ID=abc123
-```
-
-## 주요 API
+## API
 
 ### 클라이언트 API
 
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible 채팅 완료 요청 |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible 채팅 완성 |
 | `GET` | `/v1/models` | 사용 가능한 모델 목록 |
-| `GET` | `/health` | 헬스체크 |
-| `GET` | `/v1/public/status` | 월드 뷰어용 공개 상태. 큐/워커/오토스케일 요약 |
-
-요청 예시:
-
-```bash
-curl -X POST http://localhost:18200/v1/chat/completions \
-  -H "Authorization: Bearer $LLM_SERVER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemma4:e4b",
-    "messages": [
-      { "role": "system", "content": "JSON only." },
-      { "role": "user", "content": "{\"ping\":true}" }
-    ]
-  }'
-```
+| `GET` | `/health` | 기본 헬스체크 |
+| `GET` | `/v1/public/status` | 공개 상태 요약 |
 
 ### 관리자 API
 
-관리자 API는 `LLM_SERVER_ADMIN_KEY` Bearer 토큰이 필요합니다. `WORKER_REGISTRY_BACKEND=postgres`에서는 아래 API가 곧바로 `llm_workers` 테이블을 변경합니다.
-
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
-| `GET` | `/v1/queue/status` | 대기/실행/성공/실패 상태 조회 |
+| `GET` | `/v1/queue/status` | 큐 상태 조회 |
 | `GET` | `/v1/workers` | 워커 목록 조회 |
 | `GET` | `/v1/workers/health` | 워커 헬스 상태 조회 |
-| `POST` | `/v1/workers/health/check` | 전체 워커 즉시 헬스체크 |
-| `POST` | `/v1/workers/:id/health/check` | 특정 워커 즉시 헬스체크 |
-| `GET` | `/v1/autoscale/status` | 오토스케일 상태 조회 |
-| `POST` | `/v1/autoscale/tick` | 오토스케일 판단 즉시 실행 |
+| `POST` | `/v1/workers/health/check` | 전체 워커 헬스체크 |
+| `POST` | `/v1/workers/:id/health/check` | 특정 워커 헬스체크 |
 | `POST` | `/v1/workers` | 워커 추가 |
 | `PATCH` | `/v1/workers/:id` | 워커 수정 |
 | `DELETE` | `/v1/workers/:id` | 워커 삭제 |
-| `GET` | `/v1/instances` | 인스턴스/heartbeat/cleanup 상태 조회 |
+| `GET` | `/v1/autoscale/status` | 오토스케일 상태 |
+| `POST` | `/v1/autoscale/tick` | 오토스케일 즉시 평가 |
+| `GET` | `/v1/instances` | 인스턴스 상태 조회 |
 
-### 인스턴스 자동 등록 API
-
-외부 GPU 서버나 Vast 템플릿은 `LLM_SERVER_INSTANCE_KEY`로 자기 자신을 등록할 수 있습니다.
+### 인스턴스 등록 API
 
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
-| `POST` | `/v1/instances/register` | 인스턴스와 하위 worker들을 한번에 등록/갱신 |
-| `POST` | `/v1/instances/:id/heartbeat` | 인스턴스 heartbeat 갱신 |
-| `POST` | `/v1/instances/:id/deregister` | 인스턴스 및 하위 worker 해제 |
-
-등록 예시:
-
-```bash
-curl -X POST http://localhost:18200/v1/instances/register \
-  -H "Authorization: Bearer $LLM_SERVER_INSTANCE_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "instance": {
-      "id": "vast-abc123",
-      "label": "vast demo",
-      "provider": "vast",
-      "providerInstanceId": "abc123",
-      "host": "1.2.3.4",
-      "publicBaseUrl": "http://1.2.3.4:18080",
-      "gpuCount": 2,
-      "autoscaled": true
-    },
-    "workers": [
-      { "id": "vast-abc123-gpu0", "gpuIndex": 0, "type": "ollama", "models": ["gemma4:e4b"] },
-      { "id": "vast-abc123-gpu1", "gpuIndex": 1, "type": "ollama", "models": ["gemma4:e4b"] }
-    ]
-  }'
-```
-
-워커 추가 예시:
-
-```bash
-curl -X POST http://localhost:18200/v1/workers \
-  -H "Authorization: Bearer $LLM_SERVER_ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "gpu-server-2",
-    "name": "Second GPU Server",
-    "type": "ollama",
-    "baseUrl": "http://10.0.0.20:11434",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 4,
-    "enabled": true
-  }'
-```
+| `POST` | `/v1/instances/register` | 인스턴스와 워커를 한 번에 등록 |
+| `POST` | `/v1/instances/:id/heartbeat` | heartbeat 갱신 |
+| `POST` | `/v1/instances/:id/deregister` | 인스턴스와 연결 워커 제거 |
 
 ## 운영 메모
 
-- `REQUEST_TIMEOUT_MS=0`으로 두면 앱이 임의로 LLM 요청을 끊지 않습니다.
-- Cloudflare Tunnel, Nginx, Ollama 자체 timeout은 별도로 확인해야 합니다.
-- Vast.ai API 키는 `.env`의 `VAST_API_KEY`로만 주입합니다.
-- `AUTOSCALE_DRY_RUN=true`일 때는 후보 검색/생성/삭제를 실제 실행하지 않고 판단 이벤트만 남깁니다.
-- 실제 과금 액션은 `AUTOSCALE_ENABLED=true`, `AUTOSCALE_DRY_RUN=false`일 때만 실행됩니다.
-- 워커 목록은 PostgreSQL에 저장됩니다.
-- 워커 자동 헬스 상태도 PostgreSQL에 저장됩니다.
-- 큐는 아직 프로세스 메모리 기반입니다. 서버 재시작 시 대기 중인 요청은 사라집니다.
-- 다음 단계에서 Redis 기반 영속 큐로 바꾸면 멀티 인스턴스 스케일링이 쉬워집니다.
-
-## 다음 확장 방향
-
-- Redis 기반 글로벌 큐와 여러 `terarium-llm-server` 인스턴스 간 분산 처리
-- 워커 헬스체크와 자동 disable
-- 모델별 라우팅 정책
-- 요청 우선순위
-- Prometheus 메트릭
+- 큐 서버는 `REQUEST_TIMEOUT_MS=0` 으로 두고, upstream timeout 은 별도로 관리하는 편이 안전합니다.
+- 워커는 가능한 한 private network 또는 Tailscale 주소를 사용합니다.
+- 서버를 여러 대 붙일 때는 `llm1.team-doob.com`, `llm2.team-doob.com` 같은 서버 단위 DNS를 두고, 실제 worker 등록은 private endpoint 로 처리하는 것이 낫습니다.
+- 장기적으로는 Redis 같은 외부 큐를 붙이면 다중 `terarium-llm-server` 인스턴스 운영이 쉬워집니다.
