@@ -26,7 +26,13 @@ export function instanceLabel(instance) {
 }
 
 function renderSingleGpuOnstart() {
-  return ['ollama serve &', 'sleep 5', `ollama pull ${config.defaultModel}`, 'wait'].join('\n');
+  return [
+    'set -e',
+    `OLLAMA_HOST=0.0.0.0:${config.autoscale.instancePort} ollama serve >/tmp/ollama.log 2>&1 &`,
+    'sleep 8',
+    `OLLAMA_HOST=127.0.0.1:${config.autoscale.instancePort} ollama pull ${config.autoscale.workerModel}`,
+    'wait'
+  ].join('\n');
 }
 
 function renderMultiGpuOnstart(gpuCount) {
@@ -36,7 +42,10 @@ function renderMultiGpuOnstart(gpuCount) {
     lines.push(`CUDA_VISIBLE_DEVICES=${gpuIndex} OLLAMA_HOST=0.0.0.0:${port} ollama serve >/tmp/ollama-${gpuIndex}.log 2>&1 &`);
   }
   lines.push('sleep 8');
-  lines.push(`ollama pull ${config.defaultModel}`);
+  for (let gpuIndex = 0; gpuIndex < gpuCount; gpuIndex += 1) {
+    const port = config.autoscale.ollamaBasePort + gpuIndex;
+    lines.push(`OLLAMA_HOST=127.0.0.1:${port} ollama pull ${config.autoscale.workerModel}`);
+  }
   lines.push('wait');
   return lines.join('\n');
 }
@@ -86,12 +95,27 @@ function offerReliability(offer) {
   return Number(offer?.reliability2 ?? offer?.reliability ?? offer?.machine?.reliability ?? 0);
 }
 
+function offerDlperf(offer) {
+  return Number(offer?.dlperf ?? offer?.machine?.dlperf ?? 0);
+}
+
+function offerComputeCap(offer) {
+  return Number(offer?.compute_cap ?? offer?.machine?.compute_cap ?? 0);
+}
+
+function excludedGpuRegex() {
+  const pattern = String(config.autoscale.excludeGpuRegex || '').trim();
+  if (!pattern) return null;
+  return new RegExp(pattern, 'i');
+}
+
 function scoreOffer(offer) {
   const price = offerPrice(offer);
   const vramGb = offerVramGb(offer);
-  if (!Number.isFinite(price) || price <= 0 || vramGb <= 0) return Number.POSITIVE_INFINITY;
-  const overspecPenalty = Math.max(0, vramGb - config.autoscale.minGpuVramGb) * 0.005;
-  return price / vramGb + overspecPenalty;
+  const dlperf = offerDlperf(offer);
+  if (!Number.isFinite(price) || price <= 0 || vramGb <= 0 || dlperf <= 0) return Number.POSITIVE_INFINITY;
+  const overspecPenalty = Math.max(0, vramGb - config.autoscale.minGpuVramGb) * 0.00005;
+  return price / dlperf + overspecPenalty;
 }
 
 export function normalizeOffer(offer) {
@@ -104,6 +128,9 @@ export function normalizeOffer(offer) {
     dollars_per_hour: price,
     vram_per_dollar_hour: Number.isFinite(price) && price > 0 ? vramGb / price : 0,
     reliability: offerReliability(offer),
+    compute_cap: offerComputeCap(offer),
+    dlperf: offerDlperf(offer),
+    dlperf_per_dollar_hour: Number(offer?.dlperf_per_dphtotal ?? 0),
     score: scoreOffer(offer),
     raw: offer
   };
@@ -118,12 +145,20 @@ export class VastProvider {
       rentable: { eq: true },
       rented: { eq: false },
       external: { eq: false },
+      num_gpus: config.autoscale.singleGpuOnly ? { eq: 1 } : undefined,
+      direct_port_count: { gte: 2 },
       gpu_ram: { gte: config.autoscale.minGpuVramGb * 1024, lte: config.autoscale.maxGpuVramGb * 1024 },
+      compute_cap: { gte: config.autoscale.minComputeCap },
+      dlperf: { gte: config.autoscale.minDlperf },
       reliability2: { gte: config.autoscale.minReliability },
       dph_total: { lte: config.autoscale.maxDollarsPerHour },
       disk_space: { gte: config.autoscale.diskGb },
       order: [['dph_total', 'asc']]
     };
+
+    for (const key of Object.keys(body)) {
+      if (body[key] === undefined) delete body[key];
+    }
 
     const data = await vastFetch('/bundles/', {
       method: 'POST',
@@ -131,7 +166,11 @@ export class VastProvider {
     });
 
     const offers = Array.isArray(data?.offers) ? data.offers : Array.isArray(data?.bundles) ? data.bundles : [];
-    const normalized = offers.map(normalizeOffer).filter((offer) => offer.id);
+    const excluded = excludedGpuRegex();
+    const normalized = offers
+      .map(normalizeOffer)
+      .filter((offer) => offer.id)
+      .filter((offer) => !excluded || !excluded.test(String(offer.gpu_name || '')));
     normalized.sort((a, b) => a.score - b.score);
     return normalized[0] || null;
   }
@@ -151,20 +190,27 @@ export class VastProvider {
       : usePortSplit
         ? Array.from({ length: gpuCount }, (_, index) => `${config.autoscale.ollamaBasePort + index}/tcp`)
         : [`${config.autoscale.instancePort}/tcp`];
+    const portEnv = Object.fromEntries(
+      ports.map((port) => {
+        const containerPort = String(port).replace(/\/tcp$/i, '');
+        return [`-p ${containerPort}:${containerPort}`, '1'];
+      })
+    );
 
     const body = {
       client_id: 'me',
       image: config.autoscale.dockerImage,
       disk: config.autoscale.diskGb,
       label: `terarium-llm-${Date.now()}`,
+      runtype: 'ssh_direct',
       env: {
         OLLAMA_HOST: `0.0.0.0:${config.autoscale.instancePort}`,
-        TERARIUM_WORKER_MODEL: config.defaultModel,
+        TERARIUM_WORKER_MODEL: config.autoscale.workerModel,
         TERARIUM_ROUTER_PORT: String(config.autoscale.routerPort),
         TERARIUM_OLLAMA_BASE_PORT: String(config.autoscale.ollamaBasePort),
-        TERARIUM_REGISTER_PER_GPU: String(config.autoscale.registerPerGpu)
+        TERARIUM_REGISTER_PER_GPU: String(config.autoscale.registerPerGpu),
+        ...portEnv
       },
-      ports
     };
     if (onstart) body.onstart = onstart;
     if (config.autoscale.templateHashId) body.template_hash_id = config.autoscale.templateHashId;

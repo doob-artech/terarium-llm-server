@@ -12,6 +12,7 @@ export class LlmQueue {
     this.lastErrorAt = null;
     this.lastError = null;
     this.samples = [];
+    this.recentDurations = [];
   }
 
   enqueueChatCompletion(body) {
@@ -70,22 +71,27 @@ export class LlmQueue {
   }
 
   async runRequest(worker, request) {
+    const startedAtMs = Date.now();
     this.registry.markStart(worker.id);
     this.running.set(request.id, {
       id: request.id,
       model: request.model,
       workerId: worker.id,
-      startedAt: new Date().toISOString()
+      startedAt: new Date(startedAtMs).toISOString()
     });
 
     try {
       const response = await callWorker(worker, request.body);
-      this.registry.markSuccess(worker.id);
+      const durationMs = Date.now() - startedAtMs;
+      this.recordDuration(durationMs);
+      this.registry.markSuccess(worker.id, durationMs);
       this.completed += 1;
       this.lastSuccessAt = new Date().toISOString();
       request.resolve(response);
     } catch (error) {
-      this.registry.markFailure(worker.id, error);
+      const durationMs = Date.now() - startedAtMs;
+      this.recordDuration(durationMs);
+      this.registry.markFailure(worker.id, error, durationMs);
       this.failed += 1;
       this.lastErrorAt = new Date().toISOString();
       this.lastError = error?.message || String(error);
@@ -96,7 +102,23 @@ export class LlmQueue {
     }
   }
 
+  recordDuration(durationMs) {
+    const value = Math.max(0, Math.round(Number(durationMs) || 0));
+    this.recentDurations.push({ atMs: Date.now(), durationMs: value });
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    this.recentDurations = this.recentDurations.filter((item) => item.atMs >= cutoff).slice(-500);
+  }
+
+  durationStats(windowMs = 5 * 60 * 1000) {
+    const cutoff = Date.now() - windowMs;
+    const items = this.recentDurations.filter((item) => item.atMs >= cutoff);
+    const count = items.length;
+    const avgMs = count ? Math.round(items.reduce((sum, item) => sum + item.durationMs, 0) / count) : 0;
+    return { count, avg_ms: avgMs };
+  }
+
   status() {
+    const duration = this.durationStats();
     return {
       default_model: config.defaultModel,
       timeout_ms: config.requestTimeoutMs,
@@ -107,6 +129,8 @@ export class LlmQueue {
       last_success_at: this.lastSuccessAt,
       last_error_at: this.lastErrorAt,
       last_error: this.lastError,
+      avg_duration_ms: duration.avg_ms,
+      duration_sample_count: duration.count,
       running_requests: Array.from(this.running.values()),
       pending_requests: this.pending.map((request) => ({
         id: request.id,
@@ -118,15 +142,20 @@ export class LlmQueue {
 
   sample() {
     const now = Date.now();
+    const capacity = this.registry.listPublic().reduce((sum, worker) => {
+      if (!worker.available) return sum;
+      return sum + Number(worker.concurrency || 0);
+    }, 0);
+    const duration = this.durationStats();
     const item = {
       at: new Date(now).toISOString(),
       atMs: now,
       pending: this.pending.length,
       running: this.running.size,
-      capacity: this.registry.listPublic().reduce((sum, worker) => {
-        if (!worker.available) return sum;
-        return sum + Number(worker.concurrency || 0);
-      }, 0)
+      capacity,
+      utilization: capacity > 0 ? this.running.size / capacity : 0,
+      avgDurationMs: duration.avg_ms,
+      durationSampleCount: duration.count
     };
     this.samples.push(item);
     this.samples = this.samples.filter((sample) => now - sample.atMs <= 10 * 60 * 1000);

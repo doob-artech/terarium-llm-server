@@ -151,7 +151,7 @@ async function callOllama(worker, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (worker.apiKey) headers.Authorization = `Bearer ${worker.apiKey}`;
 
-  const model = modelFor(worker, body.model);
+  const model = worker.defaultModel || modelFor(worker, body.model);
   const ollamaBody = {
     model,
     messages: Array.isArray(body.messages) ? body.messages.map(normalizeOllamaMessage) : [],

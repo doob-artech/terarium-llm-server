@@ -175,11 +175,29 @@ app.get('/v1/autoscale/status', requireAdminKey, (req, res) => {
   res.json(autoscaler.status());
 });
 
+app.patch('/v1/autoscale/settings', requireAdminKey, async (req, res) => {
+  try {
+    const enabled = req.body?.enabled === true;
+    const destroyCapacity = req.body?.destroyCapacity !== false;
+    res.json({ ok: true, autoscale: await autoscaler.setEnabled(enabled, { destroyCapacity }) });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'autoscale_settings_failed' } });
+  }
+});
+
 app.post('/v1/autoscale/tick', requireAdminKey, async (req, res) => {
   try {
     res.json(await autoscaler.tick());
   } catch (error) {
     res.status(500).json({ error: { message: error.message, type: 'autoscale_failed' } });
+  }
+});
+
+app.post('/v1/autoscale/reset', requireAdminKey, async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await autoscaler.resetAutoscaledCapacity()) });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'autoscale_reset_failed' } });
   }
 });
 

@@ -5,6 +5,29 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function publicOffer(offer) {
+  if (!offer) return null;
+  return {
+    id: offer.id,
+            gpu_name: offer.gpu_name,
+            gpu_vram_gb: offer.gpu_vram_gb,
+            dollars_per_hour: offer.dollars_per_hour,
+            vram_per_dollar_hour: offer.vram_per_dollar_hour,
+            reliability: offer.reliability,
+            compute_cap: offer.compute_cap,
+            dlperf: offer.dlperf,
+            dlperf_per_dollar_hour: offer.dlperf_per_dollar_hour,
+            score: offer.score
+          };
+}
+
+function publicCreatedInstance(instance) {
+  return {
+    success: Boolean(instance?.success),
+    id: String(instance?.new_contract || instance?.instance_id || instance?.id || '')
+  };
+}
+
 export class Autoscaler {
   constructor({ queue, registry, healthMonitor, instances }) {
     this.queue = queue;
@@ -28,7 +51,11 @@ export class Autoscaler {
       this.tick().catch((error) => this.record('error', error.message || String(error)));
     }, config.autoscale.intervalMs);
     this.timer.unref?.();
-    this.tick().catch((error) => this.record('error', error.message || String(error)));
+    if (!config.autoscale.enabled && !config.autoscale.dryRun) {
+      this.resetAutoscaledCapacity().catch((error) => this.record('error', error.message || String(error)));
+    } else {
+      this.tick().catch((error) => this.record('error', error.message || String(error)));
+    }
   }
 
   stop() {
@@ -59,17 +86,48 @@ export class Autoscaler {
   pressure() {
     this.queue.sample();
     const samples = this.queue.recentSamples(config.autoscale.sustainedBacklogMs);
-    const sustained = samples.length > 0 && samples.every((sample) => sample.pending >= config.autoscale.backlogPerWorker);
+    const sustainedBacklog = samples.length > 0 && samples.every((sample) => sample.pending >= config.autoscale.backlogPerWorker);
+    const sustainedHighUtilization =
+      samples.length > 0 &&
+      samples.every((sample) => sample.capacity > 0 && sample.utilization >= config.autoscale.targetUtilization);
+    const scaleDownSamples = this.queue.recentSamples(config.autoscale.scaleDownIdleMs);
+    const sustainedLowUtilization =
+      scaleDownSamples.length > 0 &&
+      scaleDownSamples.every((sample) => sample.pending === 0 && sample.utilization <= config.autoscale.scaleDownUtilization);
     const latest = samples[samples.length - 1] || null;
     const avgPending = samples.length
       ? samples.reduce((sum, sample) => sum + sample.pending, 0) / samples.length
       : 0;
+    const avgRunning = samples.length
+      ? samples.reduce((sum, sample) => sum + sample.running, 0) / samples.length
+      : 0;
+    const avgUtilization = samples.length
+      ? samples.reduce((sum, sample) => sum + sample.utilization, 0) / samples.length
+      : 0;
+    const avgDurationMs = samples.length
+      ? Math.round(samples.reduce((sum, sample) => sum + Number(sample.avgDurationMs || 0), 0) / samples.length)
+      : 0;
+    const targetWorkersByThroughput = avgDurationMs > 0
+      ? Math.ceil((config.autoscale.targetRequestsPerSecond * avgDurationMs) / 1000 / Math.max(0.1, config.autoscale.targetUtilization))
+      : 0;
 
     return {
-      sustained,
+      sustained: sustainedBacklog || sustainedHighUtilization,
+      sustainedBacklog,
+      sustainedHighUtilization,
+      sustainedLowUtilization,
       avgPending,
+      avgRunning,
+      avgUtilization,
+      avgDurationMs,
       latestPending: latest?.pending || 0,
+      latestRunning: latest?.running || 0,
+      latestCapacity: latest?.capacity || 0,
+      latestUtilization: latest?.utilization || 0,
+      targetRequestsPerSecond: config.autoscale.targetRequestsPerSecond,
+      targetWorkersByThroughput,
       sampleCount: samples.length,
+      scaleDownSampleCount: scaleDownSamples.length,
       windowMs: config.autoscale.sustainedBacklogMs
     };
   }
@@ -97,18 +155,31 @@ export class Autoscaler {
         enabled: config.autoscale.enabled,
         dryRun: config.autoscale.dryRun,
         action: 'hold',
-        reason: 'no sustained backlog',
+        reason: 'no sustained pressure',
         pressure,
         capacity
       };
 
-      if (pressure.sustained && capacity.totalWorkers < config.autoscale.maxWorkers) {
+      const scaleUpCooldownActive =
+        this.lastScaleUpAt && Date.now() - Date.parse(this.lastScaleUpAt) < config.autoscale.scaleUpCooldownMs;
+      const underThroughputTarget =
+        pressure.targetWorkersByThroughput > 0 &&
+        capacity.availableCapacity < Math.min(config.autoscale.maxWorkers, pressure.targetWorkersByThroughput);
+
+      if (scaleUpCooldownActive) {
+        decision.action = 'hold';
+        decision.reason = 'scale-up cooldown active';
+      } else if ((pressure.sustained || underThroughputTarget) && capacity.totalWorkers < config.autoscale.maxWorkers) {
         decision.action = 'scale_up';
-        decision.reason = 'queue backlog sustained';
+        decision.reason = pressure.sustainedBacklog
+          ? 'queue backlog sustained'
+          : pressure.sustainedHighUtilization
+            ? 'worker utilization sustained high'
+            : 'average duration requires more workers for target throughput';
         await this.scaleUp(decision);
-      } else if (!pressure.sustained && capacity.autoscaledWorkers > config.autoscale.minWorkers) {
+      } else if (pressure.sustainedLowUtilization && capacity.autoscaledWorkers > config.autoscale.minWorkers) {
         decision.action = 'scale_down_candidate';
-        decision.reason = 'autoscaled capacity is idle';
+        decision.reason = 'autoscaled capacity stayed under utilization target';
         await this.scaleDown(decision);
       }
 
@@ -139,9 +210,11 @@ export class Autoscaler {
     const instance = await this.provider.createInstance(offer);
     const instanceId = String(instance?.new_contract || instance?.instance_id || instance?.id || '');
     this.managedInstances.set(instanceId, { createdAtMs: Date.now(), offer, instance });
-    await this.registerInstanceWorkers(instanceId, instance);
     this.lastScaleUpAt = nowIso();
-    this.record('scale_up_created', 'created Vast.ai instance', { offer, instance });
+    this.record('scale_up_created', 'created Vast.ai instance; waiting for port mapping and healthcheck', {
+      offer: publicOffer(offer),
+      instance: publicCreatedInstance(instance)
+    });
   }
 
   async syncManagedInstances() {
@@ -171,6 +244,31 @@ export class Autoscaler {
         await this.instances.remove(entry.id).catch(() => null);
       }
     }
+
+    await this.cleanupTimedOutPendingInstances();
+  }
+
+  async cleanupTimedOutPendingInstances() {
+    const timeoutMs = config.autoscale.pendingInstanceTimeoutMs;
+    if (!timeoutMs || timeoutMs <= 0) return;
+
+    for (const [instanceId, tracked] of this.managedInstances.entries()) {
+      if (Date.now() - tracked.createdAtMs < timeoutMs) continue;
+      const workers = this.registry.listPublic().filter((worker) => worker.provider === 'vast' && worker.providerInstanceId === instanceId);
+      if (workers.some((worker) => worker.available || worker.active > 0)) continue;
+
+      await this.provider.destroyInstance(instanceId).catch(() => null);
+      for (const worker of workers) {
+        await this.registry.remove(worker.id).catch(() => null);
+      }
+      if (this.instances) await this.instances.remove(`vast-${instanceId}`).catch(() => null);
+      this.managedInstances.delete(instanceId);
+      this.lastScaleDownAt = nowIso();
+      this.record('scale_down_destroyed', 'destroyed pending Vast.ai instance without healthy workers', {
+        instanceId,
+        workerIds: workers.map((worker) => worker.id)
+      });
+    }
   }
 
   mappedPortFor(instance, targetPort) {
@@ -178,6 +276,16 @@ export class Autoscaler {
     const portKey = `${targetPort}/tcp`;
     const mapped = ports[portKey] || ports[String(targetPort)] || ports[targetPort];
     return Array.isArray(mapped) ? mapped[0]?.HostPort || mapped[0] : mapped?.HostPort || mapped;
+  }
+
+  publicPortForWorker(instance, gpuIndex, gpuCount) {
+    if (config.autoscale.templateHashId && config.autoscale.templateUsesRouter) {
+      return this.mappedPortFor(instance, config.autoscale.routerPort);
+    }
+    if (gpuCount > 1 && config.autoscale.registerPerGpu) {
+      return this.mappedPortFor(instance, config.autoscale.ollamaBasePort + gpuIndex);
+    }
+    return this.mappedPortFor(instance, config.autoscale.instancePort);
   }
 
   endpointFromInstance(instance) {
@@ -194,9 +302,11 @@ export class Autoscaler {
 
     const gpuCount = gpuCountFromInstance(instance);
     const label = instanceLabel(instance) || `Vast.ai ${instanceId}`;
-    const publicBaseUrl = config.autoscale.templateHashId
-      ? `${baseEndpoint}:${this.mappedPortFor(instance, config.autoscale.routerPort) || config.autoscale.routerPort}`
-      : '';
+    const routerPort =
+      config.autoscale.templateHashId && config.autoscale.templateUsesRouter
+        ? this.mappedPortFor(instance, config.autoscale.routerPort)
+        : '';
+    const publicBaseUrl = routerPort ? `${baseEndpoint}:${routerPort}` : '';
 
     if (this.instances) {
       await this.instances
@@ -215,7 +325,8 @@ export class Autoscaler {
           metadata: {
             source: 'autoscaler',
             routerPort: config.autoscale.routerPort,
-            templateHashId: config.autoscale.templateHashId || ''
+            templateHashId: config.autoscale.templateHashId || '',
+            templateUsesRouter: config.autoscale.templateUsesRouter
           }
         })
         .catch(() => null);
@@ -223,16 +334,17 @@ export class Autoscaler {
 
     for (let gpuIndex = 0; gpuIndex < gpuCount; gpuIndex += 1) {
       const workerId = this.workerIdForInstance(instanceId, gpuIndex, gpuCount);
+      const publicPort = this.publicPortForWorker(instance, gpuIndex, gpuCount);
+      if (!publicPort) {
+        this.record('worker_waiting_for_port', 'Vast.ai worker has no public port mapping yet', { workerId, instanceId, gpuIndex });
+        continue;
+      }
       let baseUrl;
-      if (config.autoscale.templateHashId) {
-        const publicPort = this.mappedPortFor(instance, config.autoscale.routerPort) || config.autoscale.routerPort;
+      if (config.autoscale.templateHashId && config.autoscale.templateUsesRouter) {
         baseUrl = this.workerBaseUrlForInstance(`${baseEndpoint}:${publicPort}`, gpuIndex, gpuCount);
       } else if (gpuCount > 1 && config.autoscale.registerPerGpu) {
-        const targetPort = config.autoscale.ollamaBasePort + gpuIndex;
-        const publicPort = this.mappedPortFor(instance, targetPort) || targetPort;
         baseUrl = `${baseEndpoint}:${publicPort}`;
       } else {
-        const publicPort = this.mappedPortFor(instance, config.autoscale.instancePort) || config.autoscale.instancePort;
         baseUrl = `${baseEndpoint}:${publicPort}`;
       }
       const payload = {
@@ -241,7 +353,7 @@ export class Autoscaler {
         type: 'ollama',
         baseUrl,
         models: [config.defaultModel],
-        defaultModel: config.defaultModel,
+        defaultModel: config.autoscale.workerModel,
         concurrency: 1,
         enabled: true,
         provider: 'vast',
@@ -255,8 +367,19 @@ export class Autoscaler {
         await this.registry.add(payload);
       }
 
-      await this.healthMonitor.checkOne(workerId).catch(() => null);
-      this.record('worker_registered', 'registered Vast.ai worker', { workerId, baseUrl, instanceId, gpuIndex });
+      const checked = await this.healthMonitor.checkOne(workerId).catch((error) => {
+        this.record('worker_healthcheck_failed', 'registered Vast.ai worker failed healthcheck', {
+          workerId,
+          baseUrl,
+          instanceId,
+          gpuIndex,
+          error: error.message || String(error)
+        });
+        return null;
+      });
+      if (checked?.available) {
+        this.record('worker_registered', 'registered healthy Vast.ai worker', { workerId, baseUrl, instanceId, gpuIndex });
+      }
     }
   }
 
@@ -295,34 +418,105 @@ export class Autoscaler {
     });
   }
 
+  async resetAutoscaledCapacity() {
+    const providerInstanceIds = new Set();
+    for (const worker of this.registry.listPublic()) {
+      if (worker.provider === 'vast' && worker.providerInstanceId) providerInstanceIds.add(worker.providerInstanceId);
+    }
+    if (this.instances) {
+      for (const instance of this.instances.listPublic()) {
+        if (instance.provider === 'vast' && instance.providerInstanceId) providerInstanceIds.add(instance.providerInstanceId);
+      }
+    }
+    for (const instanceId of this.managedInstances.keys()) {
+      if (instanceId) providerInstanceIds.add(instanceId);
+    }
+
+    const liveInstances = await this.provider.listInstances().catch(() => []);
+    for (const instance of liveInstances) {
+      const instanceId = String(instance?.id || instance?.instance_id || '');
+      const label = String(instance?.label || instance?.name || '');
+      if (instanceId && label.startsWith('terarium-llm-')) providerInstanceIds.add(instanceId);
+    }
+
+    const destroyed = [];
+    const destroyFailed = [];
+    for (const instanceId of providerInstanceIds) {
+      try {
+        await this.provider.destroyInstance(instanceId);
+        destroyed.push(instanceId);
+      } catch (error) {
+        const message = error.message || String(error);
+        if (!/not found/i.test(message)) destroyFailed.push({ instanceId, error: message });
+      }
+    }
+
+    const removedWorkers = [];
+    for (const worker of this.registry.listPublic()) {
+      if (worker.provider !== 'vast' && !String(worker.id || '').startsWith('vast-')) continue;
+      await this.registry.remove(worker.id).catch(() => null);
+      removedWorkers.push(worker.id);
+    }
+    if (this.instances) {
+      for (const instance of this.instances.listPublic()) {
+        if (instance.provider !== 'vast' && !String(instance.id || '').startsWith('vast-')) continue;
+        await this.instances.remove(instance.id).catch(() => null);
+      }
+    }
+
+    this.managedInstances.clear();
+    this.lastScaleDownAt = nowIso();
+    this.record('autoscale_reset', 'destroyed all Vast.ai autoscale capacity', {
+      destroyed,
+      removedWorkers,
+      destroyFailed
+    });
+    return { destroyed, removedWorkers, destroyFailed };
+  }
+
+  async setEnabled(enabled, { destroyCapacity = false } = {}) {
+    config.autoscale.enabled = Boolean(enabled);
+    let reset = null;
+    if (!config.autoscale.enabled && destroyCapacity) {
+      reset = await this.resetAutoscaledCapacity();
+    }
+    this.record(
+      config.autoscale.enabled ? 'autoscale_enabled' : 'autoscale_disabled',
+      config.autoscale.enabled ? 'Vast.ai autoscale enabled' : 'Vast.ai autoscale disabled',
+      { destroyCapacity: Boolean(destroyCapacity), reset }
+    );
+    return this.status();
+  }
+
   status() {
     return {
       enabled: config.autoscale.enabled,
       dryRun: config.autoscale.dryRun,
       interval_ms: config.autoscale.intervalMs,
       sustained_backlog_ms: config.autoscale.sustainedBacklogMs,
+      scale_up_cooldown_ms: config.autoscale.scaleUpCooldownMs,
+      pending_instance_timeout_ms: config.autoscale.pendingInstanceTimeoutMs,
       backlog_per_worker: config.autoscale.backlogPerWorker,
+      target_utilization: config.autoscale.targetUtilization,
+      scale_down_utilization: config.autoscale.scaleDownUtilization,
+      target_requests_per_second: config.autoscale.targetRequestsPerSecond,
       min_workers: config.autoscale.minWorkers,
       max_workers: config.autoscale.maxWorkers,
       min_gpu_vram_gb: config.autoscale.minGpuVramGb,
       max_gpu_vram_gb: config.autoscale.maxGpuVramGb,
+      min_compute_cap: config.autoscale.minComputeCap,
+      min_dlperf: config.autoscale.minDlperf,
+      exclude_gpu_regex: config.autoscale.excludeGpuRegex,
       max_dollars_per_hour: config.autoscale.maxDollarsPerHour,
+      single_gpu_only: config.autoscale.singleGpuOnly,
+      worker_model: config.autoscale.workerModel,
+      template_uses_router: config.autoscale.templateUsesRouter,
       router_port: config.autoscale.routerPort,
       register_per_gpu: config.autoscale.registerPerGpu,
       last_scale_up_at: this.lastScaleUpAt,
       last_scale_down_at: this.lastScaleDownAt,
       last_decision: this.lastDecision,
-      last_offer: this.lastOffer
-        ? {
-            id: this.lastOffer.id,
-            gpu_name: this.lastOffer.gpu_name,
-            gpu_vram_gb: this.lastOffer.gpu_vram_gb,
-            dollars_per_hour: this.lastOffer.dollars_per_hour,
-            vram_per_dollar_hour: this.lastOffer.vram_per_dollar_hour,
-            reliability: this.lastOffer.reliability,
-            score: this.lastOffer.score
-          }
-        : null,
+      last_offer: publicOffer(this.lastOffer),
       capacity: this.capacity(),
       events: this.events
     };

@@ -38,16 +38,23 @@ export function normalizeWorker(raw) {
 }
 
 function publicWorker(worker, runtime = {}) {
+  const completed = runtime.completed || 0;
+  const failed = runtime.failed || 0;
+  const totalFinished = completed + failed;
+  const totalDurationMs = runtime.totalDurationMs || 0;
   return {
     ...worker,
     apiKey: worker.apiKey ? '***' : '',
     active: runtime.active || 0,
-    completed: runtime.completed || 0,
-    failed: runtime.failed || 0,
+    completed,
+    failed,
+    totalDurationMs,
+    avgDurationMs: totalFinished > 0 ? Math.round(totalDurationMs / totalFinished) : 0,
+    lastDurationMs: runtime.lastDurationMs || 0,
     lastSuccessAt: runtime.lastSuccessAt || null,
     lastErrorAt: runtime.lastErrorAt || null,
     lastError: runtime.lastError || null,
-    available: worker.enabled && worker.healthStatus !== 'unhealthy'
+    available: worker.enabled && worker.healthStatus === 'healthy'
   };
 }
 
@@ -63,7 +70,7 @@ class BaseWorkerRegistry {
   }
 
   ensureRuntime(worker) {
-    if (!this.runtime.has(worker.id)) this.runtime.set(worker.id, { active: 0, completed: 0, failed: 0 });
+    if (!this.runtime.has(worker.id)) this.runtime.set(worker.id, { active: 0, completed: 0, failed: 0, totalDurationMs: 0, lastDurationMs: 0 });
   }
 
   listPublic() {
@@ -73,7 +80,7 @@ class BaseWorkerRegistry {
   listEnabledForModel(model) {
     return this.workers.filter((worker) => {
       if (!worker.enabled) return false;
-      if (worker.healthStatus === 'unhealthy') return false;
+      if (worker.healthStatus !== 'healthy') return false;
       if (!worker.models.length) return true;
       return worker.models.includes(model);
     });
@@ -89,19 +96,23 @@ class BaseWorkerRegistry {
     this.runtime.set(id, stats);
   }
 
-  markSuccess(id) {
-    const stats = this.runtime.get(id) || { active: 0, completed: 0, failed: 0 };
+  markSuccess(id, durationMs = 0) {
+    const stats = this.runtime.get(id) || { active: 0, completed: 0, failed: 0, totalDurationMs: 0, lastDurationMs: 0 };
     stats.active = Math.max(0, stats.active - 1);
     stats.completed += 1;
+    stats.lastDurationMs = Math.max(0, Math.round(Number(durationMs) || 0));
+    stats.totalDurationMs = Math.max(0, Math.round(Number(stats.totalDurationMs || 0) + stats.lastDurationMs));
     stats.lastSuccessAt = new Date().toISOString();
     stats.lastError = null;
     this.runtime.set(id, stats);
   }
 
-  markFailure(id, error) {
-    const stats = this.runtime.get(id) || { active: 0, completed: 0, failed: 0 };
+  markFailure(id, error, durationMs = 0) {
+    const stats = this.runtime.get(id) || { active: 0, completed: 0, failed: 0, totalDurationMs: 0, lastDurationMs: 0 };
     stats.active = Math.max(0, stats.active - 1);
     stats.failed += 1;
+    stats.lastDurationMs = Math.max(0, Math.round(Number(durationMs) || 0));
+    stats.totalDurationMs = Math.max(0, Math.round(Number(stats.totalDurationMs || 0) + stats.lastDurationMs));
     stats.lastErrorAt = new Date().toISOString();
     stats.lastError = error?.message || String(error);
     this.runtime.set(id, stats);

@@ -23,11 +23,43 @@ async function fetchHealth(url, worker) {
   }
 }
 
+async function fetchJsonHealth(url, worker) {
+  const { signal, cancel } = abortSignal(config.healthcheck.timeoutMs);
+  const headers = {};
+  if (worker.apiKey) headers.Authorization = `Bearer ${worker.apiKey}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET', headers, signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } finally {
+    cancel();
+  }
+}
+
+function ollamaTagNames(data) {
+  if (!Array.isArray(data?.models)) return [];
+  return data.models.flatMap((model) => [model.name, model.model]).filter(Boolean);
+}
+
+function hasExpectedModel(modelNames, expectedModel) {
+  if (!expectedModel) return modelNames.length > 0;
+  return modelNames.some(
+    (name) => name === expectedModel || name.startsWith(`${expectedModel}:`) || expectedModel.startsWith(`${name}:`)
+  );
+}
+
 export async function checkWorkerHealth(worker) {
   if (worker.type === 'openai-compatible') {
     await fetchHealth(`${worker.baseUrl}/v1/models`, worker);
   } else {
-    await fetchHealth(`${worker.baseUrl}/api/tags`, worker);
+    const data = await fetchJsonHealth(`${worker.baseUrl}/api/tags`, worker);
+    const expectedModel = String(worker.defaultModel || config.defaultModel || '').trim();
+    const modelNames = ollamaTagNames(data);
+    if (!hasExpectedModel(modelNames, expectedModel)) {
+      const available = modelNames.length > 0 ? modelNames.join(', ') : 'none';
+      throw new Error(`model ${expectedModel || '(any)'} not pulled; available: ${available}`);
+    }
   }
   return { ok: true, reason: 'ok' };
 }
@@ -111,6 +143,15 @@ export class WorkerHealthMonitor {
         name: worker.name,
         enabled: worker.enabled,
         available: worker.available,
+        concurrency: worker.concurrency,
+        active: worker.active,
+        completed: worker.completed,
+        failed: worker.failed,
+        avgDurationMs: worker.avgDurationMs,
+        lastDurationMs: worker.lastDurationMs,
+        lastSuccessAt: worker.lastSuccessAt,
+        lastErrorAt: worker.lastErrorAt,
+        lastError: worker.lastError,
         healthStatus: worker.healthStatus,
         healthReason: worker.healthReason,
         lastHealthCheckAt: worker.lastHealthCheckAt,
@@ -120,4 +161,3 @@ export class WorkerHealthMonitor {
     };
   }
 }
-
