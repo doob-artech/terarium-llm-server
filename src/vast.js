@@ -137,7 +137,7 @@ export function normalizeOffer(offer) {
 }
 
 export class VastProvider {
-  async searchBestOffer() {
+  async searchOffers() {
     const body = {
       limit: 50,
       type: 'ondemand',
@@ -172,6 +172,11 @@ export class VastProvider {
       .filter((offer) => offer.id)
       .filter((offer) => !excluded || !excluded.test(String(offer.gpu_name || '')));
     normalized.sort((a, b) => a.score - b.score);
+    return normalized;
+  }
+
+  async searchBestOffer() {
+    const normalized = await this.searchOffers();
     return normalized[0] || null;
   }
 

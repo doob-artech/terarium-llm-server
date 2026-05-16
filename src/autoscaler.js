@@ -215,14 +215,32 @@ export class Autoscaler {
       return;
     }
 
-    const offer = await this.provider.searchBestOffer();
-    this.lastOffer = offer;
-    if (!offer) {
+    const offers = await this.provider.searchOffers();
+    if (!offers.length) {
       this.record('scale_up_failed', 'no matching Vast.ai offer found', decision);
       return;
     }
 
-    const instance = await this.provider.createInstance(offer);
+    let offer = null;
+    let instance = null;
+    const failedOffers = [];
+    for (const candidate of offers.slice(0, 8)) {
+      this.lastOffer = candidate;
+      try {
+        instance = await this.provider.createInstance(candidate);
+        offer = candidate;
+        break;
+      } catch (error) {
+        const message = error.message || String(error);
+        failedOffers.push({ offer: publicOffer(candidate), error: message });
+        if (!/no_such_ask|not available/i.test(message)) throw error;
+      }
+    }
+    if (!instance || !offer) {
+      this.record('scale_up_failed', 'all matching Vast.ai offers disappeared before creation', { ...decision, failedOffers });
+      return;
+    }
+
     const instanceId = String(instance?.new_contract || instance?.instance_id || instance?.id || '');
     this.managedInstances.set(instanceId, { createdAtMs: Date.now(), offer, instance });
     this.lastScaleUpAt = nowIso();
