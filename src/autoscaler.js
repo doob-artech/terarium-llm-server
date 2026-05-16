@@ -72,13 +72,23 @@ export class Autoscaler {
 
   capacity() {
     const workers = this.registry.listPublic();
+    const instanceEntries = this.instances
+      ? this.instances.listPublic().filter((instance) => instance.provider === 'vast' && instance.autoscaled)
+      : [];
+    const workerInstanceIds = new Set(workers.filter((worker) => worker.providerInstanceId).map((worker) => worker.providerInstanceId));
+    const pendingInstances = instanceEntries.filter((instance) => instance.providerInstanceId && !workerInstanceIds.has(instance.providerInstanceId));
+    const instanceIds = new Set([
+      ...workers.filter((worker) => worker.providerInstanceId).map((worker) => worker.providerInstanceId),
+      ...instanceEntries.map((instance) => instance.providerInstanceId).filter(Boolean)
+    ]);
     return {
-      totalWorkers: workers.length,
-      totalInstances: new Set(workers.filter((worker) => worker.providerInstanceId).map((worker) => worker.providerInstanceId))
-        .size,
+      totalWorkers: workers.length + pendingInstances.length,
+      registeredWorkers: workers.length,
+      pendingWorkers: pendingInstances.length,
+      totalInstances: instanceIds.size,
       availableWorkers: workers.filter((worker) => worker.available).length,
-      autoscaledWorkers: workers.filter((worker) => worker.autoscaled).length,
-      totalCapacity: workers.reduce((sum, worker) => sum + Number(worker.concurrency || 0), 0),
+      autoscaledWorkers: workers.filter((worker) => worker.autoscaled).length + pendingInstances.length,
+      totalCapacity: workers.reduce((sum, worker) => sum + Number(worker.concurrency || 0), 0) + pendingInstances.length,
       availableCapacity: workers.reduce((sum, worker) => (worker.available ? sum + Number(worker.concurrency || 0) : sum), 0)
     };
   }

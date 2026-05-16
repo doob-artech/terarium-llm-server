@@ -236,7 +236,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS autoscaled boolean NOT NULL DEFAULT false');
 
     const count = await this.pool.query('SELECT count(*)::int AS count FROM llm_workers');
-    if (count.rows[0].count === 0) {
+    if (count.rows[0].count === 0 && config.workerRegistrySeedExample) {
       for (const worker of seedWorkersFromExample()) {
         await this.upsert(worker);
       }

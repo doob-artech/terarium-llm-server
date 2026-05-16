@@ -186,7 +186,7 @@ export class VastProvider {
         ? renderMultiGpuOnstart(gpuCount)
         : renderSingleGpuOnstart();
     const ports = useTemplate
-      ? [`${config.autoscale.routerPort}/tcp`]
+      ? [`${config.autoscale.templateUsesRouter ? config.autoscale.routerPort : config.autoscale.instancePort}/tcp`]
       : usePortSplit
         ? Array.from({ length: gpuCount }, (_, index) => `${config.autoscale.ollamaBasePort + index}/tcp`)
         : [`${config.autoscale.instancePort}/tcp`];

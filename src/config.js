@@ -87,6 +87,7 @@ export const config = {
   adminKey: process.env.LLM_SERVER_ADMIN_KEY || '',
   instanceKey: process.env.LLM_SERVER_INSTANCE_KEY || process.env.LLM_SERVER_ADMIN_KEY || '',
   workerRegistryBackend: process.env.WORKER_REGISTRY_BACKEND || 'file',
+  workerRegistrySeedExample: parseBool(process.env.WORKER_REGISTRY_SEED_EXAMPLE, true),
   workerRegistryPath: resolvePath(process.env.WORKER_REGISTRY_PATH || './data/workers.json'),
   instanceRegistryPath: resolvePath(process.env.INSTANCE_REGISTRY_PATH || './data/instances.json'),
   postgres: {
