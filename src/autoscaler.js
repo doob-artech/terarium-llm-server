@@ -162,11 +162,16 @@ export class Autoscaler {
 
       const scaleUpCooldownActive =
         this.lastScaleUpAt && Date.now() - Date.parse(this.lastScaleUpAt) < config.autoscale.scaleUpCooldownMs;
+      const belowMinimumWorkers = capacity.totalWorkers < config.autoscale.minWorkers;
       const underThroughputTarget =
         pressure.targetWorkersByThroughput > 0 &&
         capacity.availableCapacity < Math.min(config.autoscale.maxWorkers, pressure.targetWorkersByThroughput);
 
-      if (scaleUpCooldownActive) {
+      if (belowMinimumWorkers && capacity.totalWorkers < config.autoscale.maxWorkers) {
+        decision.action = 'scale_up';
+        decision.reason = 'capacity below configured minimum workers';
+        await this.scaleUp(decision);
+      } else if (scaleUpCooldownActive) {
         decision.action = 'hold';
         decision.reason = 'scale-up cooldown active';
       } else if ((pressure.sustained || underThroughputTarget) && capacity.totalWorkers < config.autoscale.maxWorkers) {

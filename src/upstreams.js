@@ -134,6 +134,9 @@ async function callOpenAiCompatible(worker, body) {
     ...body,
     model: modelFor(worker, body.model)
   };
+  if (requestBody?.response_format?.type === 'json_schema') {
+    requestBody.response_format = { type: 'json_object' };
+  }
 
   const data = await fetchJson(`${worker.baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -163,7 +166,11 @@ async function callOllama(worker, body) {
     if (body[key] !== undefined) options[key] = body[key];
   }
   if (Object.keys(options).length) ollamaBody.options = options;
-  if (body?.response_format?.type === 'json_object' || body?.format === 'json') {
+  if (
+    body?.response_format?.type === 'json_object'
+    || body?.response_format?.type === 'json_schema'
+    || body?.format === 'json'
+  ) {
     ollamaBody.format = 'json';
   }
 
