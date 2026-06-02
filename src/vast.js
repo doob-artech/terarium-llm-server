@@ -28,10 +28,7 @@ export function instanceLabel(instance) {
 function renderSingleGpuOnstart() {
   return [
     'set -e',
-    `OLLAMA_HOST=0.0.0.0:${config.autoscale.instancePort} ollama serve >/tmp/ollama.log 2>&1 &`,
-    'sleep 8',
-    `OLLAMA_HOST=127.0.0.1:${config.autoscale.instancePort} ollama pull ${config.autoscale.workerModel}`,
-    'wait'
+    `OLLAMA_HOST=0.0.0.0:${config.autoscale.instancePort} ollama serve`
   ].join('\n');
 }
 
@@ -40,11 +37,6 @@ function renderMultiGpuOnstart(gpuCount) {
   for (let gpuIndex = 0; gpuIndex < gpuCount; gpuIndex += 1) {
     const port = config.autoscale.ollamaBasePort + gpuIndex;
     lines.push(`CUDA_VISIBLE_DEVICES=${gpuIndex} OLLAMA_HOST=0.0.0.0:${port} ollama serve >/tmp/ollama-${gpuIndex}.log 2>&1 &`);
-  }
-  lines.push('sleep 8');
-  for (let gpuIndex = 0; gpuIndex < gpuCount; gpuIndex += 1) {
-    const port = config.autoscale.ollamaBasePort + gpuIndex;
-    lines.push(`OLLAMA_HOST=127.0.0.1:${port} ollama pull ${config.autoscale.workerModel}`);
   }
   lines.push('wait');
   return lines.join('\n');
@@ -65,7 +57,12 @@ async function vastFetch(path, options = {}) {
     }
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text.slice(0, 500) };
+  }
   if (!response.ok) {
     throw new Error(data?.msg || data?.error || `Vast.ai HTTP ${response.status}`);
   }
@@ -123,6 +120,7 @@ export function normalizeOffer(offer) {
   const vramGb = offerVramGb(offer);
   return {
     id: offer?.id ?? offer?.ask_contract_id ?? offer?.ask_id,
+    provider: 'vast',
     gpu_name: offer?.gpu_name || offer?.gpu_names || '',
     gpu_vram_gb: vramGb,
     dollars_per_hour: price,
@@ -137,10 +135,16 @@ export function normalizeOffer(offer) {
 }
 
 export class VastProvider {
+  constructor() {
+    this.name = 'vast';
+    this.label = 'Vast.ai';
+    this.instancePrefix = 'vast';
+  }
+
   async searchOffers() {
     const body = {
       limit: 50,
-      type: 'ondemand',
+      type: 'on-demand',
       verified: { eq: true },
       rentable: { eq: true },
       rented: { eq: false },
@@ -152,8 +156,7 @@ export class VastProvider {
       dlperf: { gte: config.autoscale.minDlperf },
       reliability2: { gte: config.autoscale.minReliability },
       dph_total: { lte: config.autoscale.maxDollarsPerHour },
-      disk_space: { gte: config.autoscale.diskGb },
-      order: [['dph_total', 'asc']]
+      disk_space: { gte: config.autoscale.diskGb }
     };
 
     for (const key of Object.keys(body)) {
@@ -203,7 +206,8 @@ export class VastProvider {
       image: config.autoscale.dockerImage,
       disk: config.autoscale.diskGb,
       label: `terarium-llm-${Date.now()}`,
-      runtype: 'ssh_direct',
+      runtype: 'jupyter_direct',
+      target_state: 'running',
       env: {
         OLLAMA_HOST: `0.0.0.0:${config.autoscale.instancePort}`,
         TERARIUM_WORKER_MODEL: config.autoscale.workerModel,
@@ -211,7 +215,7 @@ export class VastProvider {
         TERARIUM_OLLAMA_BASE_PORT: String(config.autoscale.ollamaBasePort),
         TERARIUM_REGISTER_PER_GPU: String(config.autoscale.registerPerGpu),
         ...portEnv
-      },
+      }
     };
     if (onstart) body.onstart = onstart;
     if (config.autoscale.templateHashId) body.template_hash_id = config.autoscale.templateHashId;

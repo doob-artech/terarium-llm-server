@@ -60,6 +60,16 @@ function modelFor(worker, requestModel) {
   return requestModel || worker.defaultModel || config.defaultModel;
 }
 
+function schemaFromResponseFormat(responseFormat) {
+  if (!responseFormat || typeof responseFormat !== 'object') return null;
+  if (responseFormat.type !== 'json_schema') return null;
+  const jsonSchema = responseFormat.json_schema;
+  const schema = jsonSchema && typeof jsonSchema === 'object'
+    ? jsonSchema.schema
+    : responseFormat.schema;
+  return schema && typeof schema === 'object' ? schema : null;
+}
+
 function dataUrlToBase64(value) {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
@@ -134,9 +144,6 @@ async function callOpenAiCompatible(worker, body) {
     ...body,
     model: modelFor(worker, body.model)
   };
-  if (requestBody?.response_format?.type === 'json_schema') {
-    requestBody.response_format = { type: 'json_object' };
-  }
 
   const data = await fetchJson(`${worker.baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -158,17 +165,26 @@ async function callOllama(worker, body) {
   const ollamaBody = {
     model,
     messages: Array.isArray(body.messages) ? body.messages.map(normalizeOllamaMessage) : [],
-    stream: false
+    stream: false,
+    think: body.think === undefined ? false : Boolean(body.think)
   };
 
   const options = {};
   for (const key of ['temperature', 'top_p', 'seed', 'num_predict', 'repeat_penalty']) {
     if (body[key] !== undefined) options[key] = body[key];
   }
+  if (options.num_predict === undefined) {
+    const maxTokens = Number(body.max_completion_tokens ?? body.max_tokens);
+    if (Number.isFinite(maxTokens) && maxTokens > 0) {
+      options.num_predict = Math.max(1, Math.floor(maxTokens));
+    }
+  }
   if (Object.keys(options).length) ollamaBody.options = options;
-  if (
+  const responseSchema = schemaFromResponseFormat(body?.response_format);
+  if (responseSchema) {
+    ollamaBody.format = responseSchema;
+  } else if (
     body?.response_format?.type === 'json_object'
-    || body?.response_format?.type === 'json_schema'
     || body?.format === 'json'
   ) {
     ollamaBody.format = 'json';

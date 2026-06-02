@@ -1,6 +1,39 @@
 import { config } from './config.js';
 import { callWorker } from './upstreams.js';
 
+const PRIORITY_SCORES = new Map([
+  ['interactive', 100],
+  ['user', 100],
+  ['tutorial', 100],
+  ['urgent', 100],
+  ['high', 50],
+  ['normal', 0],
+  ['default', 0],
+  ['low', -50],
+  ['background', -100]
+]);
+
+function normalizePriority(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return {
+      label: String(value),
+      score: Math.max(-100, Math.min(100, Math.round(value)))
+    };
+  }
+  const label = String(value || 'normal').trim().toLowerCase();
+  return {
+    label: PRIORITY_SCORES.has(label) ? label : 'normal',
+    score: PRIORITY_SCORES.get(label) ?? 0
+  };
+}
+
+function normalizeStartTimeoutMs(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  const timeoutMs = Math.round(Number(value));
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return 0;
+  return Math.max(1000, Math.min(timeoutMs, 30 * 60 * 1000));
+}
+
 export class LlmQueue {
   constructor(registry) {
     this.registry = registry;
@@ -13,15 +46,36 @@ export class LlmQueue {
     this.lastError = null;
     this.samples = [];
     this.recentDurations = [];
+    this.sequence = 0;
   }
 
   enqueueChatCompletion(body) {
     const model = body.model || config.defaultModel;
+    const priority = normalizePriority(body.queue_priority ?? body.priority);
+    const source = String(body.queue_source || body.request_source || '').trim().slice(0, 120);
+    const workerPool = String(body.queue_worker_pool || body.worker_pool || '').trim().slice(0, 80);
+    const startTimeoutMs = normalizeStartTimeoutMs(body.queue_start_timeout_ms);
+    const {
+      queue_priority,
+      priority: _priority,
+      queue_source,
+      request_source,
+      queue_worker_pool,
+      worker_pool,
+      queue_start_timeout_ms,
+      ...workerBody
+    } = body;
     const request = {
       id: `llm_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       model,
-      body: { ...body, model },
-      enqueuedAt: new Date().toISOString()
+      body: { ...workerBody, model },
+      enqueuedAt: new Date().toISOString(),
+      priority: priority.score,
+      priorityLabel: priority.label,
+      workerPool,
+      source,
+      startTimeoutMs,
+      sequence: this.sequence++
     };
 
     const promise = new Promise((resolve, reject) => {
@@ -29,13 +83,39 @@ export class LlmQueue {
       request.reject = reject;
     });
 
+    if (startTimeoutMs > 0) {
+      request.startTimeoutHandle = setTimeout(() => {
+        this.expirePendingRequest(request.id);
+      }, startTimeoutMs);
+    }
+
     this.pending.push(request);
+    this.pending.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
     this.pump();
     return promise;
   }
 
-  chooseWorker(model) {
-    const workers = this.registry.listEnabledForModel(model);
+  clearStartTimeout(request) {
+    if (request?.startTimeoutHandle) {
+      clearTimeout(request.startTimeoutHandle);
+      request.startTimeoutHandle = null;
+    }
+  }
+
+  expirePendingRequest(requestId) {
+    const index = this.pending.findIndex((request) => request.id === requestId);
+    if (index === -1) return false;
+    const [request] = this.pending.splice(index, 1);
+    this.clearStartTimeout(request);
+    this.failed += 1;
+    this.lastErrorAt = new Date().toISOString();
+    this.lastError = `queue start timeout after ${request.startTimeoutMs}ms before worker assignment`;
+    request.reject(new Error(this.lastError));
+    return true;
+  }
+
+  chooseWorker(model, workerPool = '') {
+    const workers = this.registry.listEnabledForModel(model, workerPool);
     let best = null;
     let bestLoad = Number.POSITIVE_INFINITY;
 
@@ -58,10 +138,11 @@ export class LlmQueue {
 
     for (let index = 0; index < this.pending.length; index += 1) {
       const request = this.pending[index];
-      const worker = this.chooseWorker(request.model);
+      const worker = this.chooseWorker(request.model, request.workerPool);
       if (!worker) continue;
 
       this.pending.splice(index, 1);
+      this.clearStartTimeout(request);
       index -= 1;
       this.runRequest(worker, request);
       scheduled = true;
@@ -77,7 +158,10 @@ export class LlmQueue {
       id: request.id,
       model: request.model,
       workerId: worker.id,
-      startedAt: new Date(startedAtMs).toISOString()
+      startedAt: new Date(startedAtMs).toISOString(),
+      priority: request.priorityLabel,
+      workerPool: request.workerPool || '',
+      source: request.source
     });
 
     try {
@@ -135,7 +219,11 @@ export class LlmQueue {
       pending_requests: this.pending.map((request) => ({
         id: request.id,
         model: request.model,
-        enqueuedAt: request.enqueuedAt
+        enqueuedAt: request.enqueuedAt,
+        priority: request.priorityLabel,
+        workerPool: request.workerPool || '',
+        source: request.source,
+        startTimeoutMs: request.startTimeoutMs
       }))
     };
   }

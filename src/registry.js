@@ -13,6 +13,7 @@ export function normalizeWorker(raw) {
     concurrency: Math.max(1, Number.parseInt(raw.concurrency, 10) || 1),
     enabled: raw.enabled !== false,
     apiKey: raw.apiKey || raw.api_key ? String(raw.apiKey || raw.api_key) : '',
+    workerPool: raw.workerPool || raw.worker_pool ? String(raw.workerPool || raw.worker_pool).trim() : 'agent',
     healthStatus: raw.healthStatus || raw.health_status ? String(raw.healthStatus || raw.health_status) : 'unknown',
     healthReason: raw.healthReason || raw.health_reason ? String(raw.healthReason || raw.health_reason) : '',
     lastHealthCheckAt:
@@ -77,10 +78,11 @@ class BaseWorkerRegistry {
     return this.workers.map((worker) => publicWorker(worker, this.runtime.get(worker.id)));
   }
 
-  listEnabledForModel(model) {
+  listEnabledForModel(model, workerPool = '') {
     return this.workers.filter((worker) => {
       if (!worker.enabled) return false;
       if (worker.healthStatus !== 'healthy') return false;
+      if (workerPool && worker.workerPool !== workerPool) return false;
       if (!worker.models.length) return true;
       return worker.models.includes(model);
     });
@@ -214,6 +216,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         concurrency integer NOT NULL DEFAULT 1 CHECK (concurrency > 0),
         enabled boolean NOT NULL DEFAULT true,
         api_key text NOT NULL DEFAULT '',
+        worker_pool text NOT NULL DEFAULT 'agent',
         health_status text NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('unknown', 'healthy', 'unhealthy')),
         health_reason text NOT NULL DEFAULT '',
         last_health_check_at timestamptz,
@@ -227,6 +230,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
       )
     `);
     await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_status text NOT NULL DEFAULT 'unknown'");
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS worker_pool text NOT NULL DEFAULT 'agent'");
     await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_reason text NOT NULL DEFAULT ''");
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS last_health_check_at timestamptz');
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_failures integer NOT NULL DEFAULT 0');
@@ -248,7 +252,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
   async reload() {
     const result = await this.pool.query(`
       SELECT
-        id, name, type, base_url, models, default_model, concurrency, enabled, api_key,
+        id, name, type, base_url, models, default_model, concurrency, enabled, api_key, worker_pool,
         health_status, health_reason, last_health_check_at, consecutive_failures, consecutive_successes,
         provider, provider_instance_id, autoscaled
       FROM llm_workers
@@ -262,9 +266,9 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
     await this.pool.query(
       `
         INSERT INTO llm_workers
-          (id, name, type, base_url, models, default_model, concurrency, enabled, api_key, provider, provider_instance_id, autoscaled, updated_at)
+          (id, name, type, base_url, models, default_model, concurrency, enabled, api_key, worker_pool, provider, provider_instance_id, autoscaled, updated_at)
         VALUES
-          ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, now())
+          ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, now())
         ON CONFLICT (id) DO UPDATE SET
           name = excluded.name,
           type = excluded.type,
@@ -274,6 +278,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
           concurrency = excluded.concurrency,
           enabled = excluded.enabled,
           api_key = excluded.api_key,
+          worker_pool = excluded.worker_pool,
           provider = excluded.provider,
           provider_instance_id = excluded.provider_instance_id,
           autoscaled = excluded.autoscaled,
@@ -289,6 +294,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         worker.concurrency,
         worker.enabled,
         worker.apiKey,
+        worker.workerPool,
         worker.provider,
         worker.providerInstanceId,
         worker.autoscaled

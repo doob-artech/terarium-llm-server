@@ -156,7 +156,14 @@ export class WorkerHealthMonitor {
         healthReason: worker.healthReason,
         lastHealthCheckAt: worker.lastHealthCheckAt,
         consecutiveFailures: worker.consecutiveFailures,
-        consecutiveSuccesses: worker.consecutiveSuccesses
+        consecutiveSuccesses: worker.consecutiveSuccesses,
+        type: worker.type,
+        models: worker.models,
+        defaultModel: worker.defaultModel,
+        workerPool: worker.workerPool,
+        provider: worker.provider,
+        providerInstanceId: worker.providerInstanceId,
+        autoscaled: worker.autoscaled
       }))
     };
   }

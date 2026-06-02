@@ -19,6 +19,14 @@ function splitKeys(value) {
     .filter(Boolean);
 }
 
+function splitList(value, fallback = []) {
+  const items = String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length ? items : fallback;
+}
+
 export function resolvePath(inputPath) {
   if (path.isAbsolute(inputPath)) return inputPath;
   return path.resolve(process.cwd(), inputPath);
@@ -45,7 +53,9 @@ export const config = {
     dryRun: parseBool(process.env.AUTOSCALE_DRY_RUN, true),
     intervalMs: parseIntEnv(process.env.AUTOSCALE_INTERVAL_MS, 5000),
     scaleUpCooldownMs: parseIntEnv(process.env.AUTOSCALE_SCALE_UP_COOLDOWN_MS, 120000),
+    failedOfferCooldownMs: parseIntEnv(process.env.AUTOSCALE_FAILED_OFFER_COOLDOWN_MS, 300000),
     pendingInstanceTimeoutMs: parseIntEnv(process.env.AUTOSCALE_PENDING_INSTANCE_TIMEOUT_MS, 180000),
+    modelPullTimeoutMs: parseIntEnv(process.env.AUTOSCALE_MODEL_PULL_TIMEOUT_MS, 900000),
     sustainedBacklogMs: parseIntEnv(process.env.AUTOSCALE_SUSTAINED_BACKLOG_MS, 60000),
     scaleDownIdleMs: parseIntEnv(process.env.AUTOSCALE_SCALE_DOWN_IDLE_MS, 300000),
     minWorkers: parseIntEnv(process.env.AUTOSCALE_MIN_WORKERS, 0),
@@ -72,7 +82,40 @@ export const config = {
     templateUsesRouter: parseBool(process.env.VAST_TEMPLATE_USES_ROUTER, false),
     dockerImage: process.env.VAST_DOCKER_IMAGE || 'ollama/ollama:latest',
     apiKey: process.env.VAST_API_KEY || '',
-    apiBaseUrl: (process.env.VAST_API_BASE_URL || 'https://console.vast.ai/api/v0').replace(/\/+$/, '')
+    apiBaseUrl: (process.env.VAST_API_BASE_URL || 'https://console.vast.ai/api/v0').replace(/\/+$/, ''),
+    providers: splitList(process.env.AUTOSCALE_PROVIDERS, ['runpod-community', 'runpod-secure', 'vast']),
+    workerPool: process.env.AUTOSCALE_WORKER_POOL || 'agent'
+  },
+  runpod: {
+    apiKey: process.env.RUNPOD_API_KEY || '',
+    restBaseUrl: (process.env.RUNPOD_REST_BASE_URL || 'https://rest.runpod.io/v1').replace(/\/+$/, ''),
+    graphqlBaseUrl: (process.env.RUNPOD_GRAPHQL_BASE_URL || 'https://api.runpod.io/graphql').replace(/\/+$/, ''),
+    communityGpuTypeIds: splitList(process.env.RUNPOD_COMMUNITY_GPU_TYPE_IDS, [
+      'NVIDIA GeForce RTX 4090',
+      'NVIDIA RTX A5000',
+      'NVIDIA RTX A4500',
+      'NVIDIA GeForce RTX 3090',
+      'NVIDIA GeForce RTX 3090 Ti',
+      'NVIDIA RTX 5000 Ada Generation',
+      'NVIDIA RTX 4000 Ada Generation',
+      'NVIDIA GeForce RTX 4080 SUPER',
+      'NVIDIA GeForce RTX 4080',
+      'NVIDIA GeForce RTX 5080'
+    ]),
+    secureGpuTypeIds: splitList(process.env.RUNPOD_SECURE_GPU_TYPE_IDS, [
+      'NVIDIA RTX A5000',
+      'NVIDIA GeForce RTX 4090',
+      'NVIDIA RTX A4500',
+      'NVIDIA GeForce RTX 3090',
+      'NVIDIA RTX 4000 Ada Generation',
+      'NVIDIA GeForce RTX 5090'
+    ]),
+    maxDollarsPerHour: Number.parseFloat(process.env.RUNPOD_MAX_DOLLARS_PER_HOUR || '0.40'),
+    containerDiskGb: parseIntEnv(process.env.RUNPOD_CONTAINER_DISK_GB, 30),
+    volumeGb: parseIntEnv(process.env.RUNPOD_VOLUME_GB, 0),
+    minVcpuCount: parseIntEnv(process.env.RUNPOD_MIN_VCPU_COUNT, 2),
+    minMemoryInGb: parseIntEnv(process.env.RUNPOD_MIN_MEMORY_GB, 15),
+    dockerImage: process.env.RUNPOD_DOCKER_IMAGE || process.env.VAST_DOCKER_IMAGE || 'ollama/ollama:latest'
   },
   instances: {
     enabled: parseBool(process.env.INSTANCE_MONITOR_ENABLED, true),
