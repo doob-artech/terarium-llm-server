@@ -24,7 +24,7 @@ docker compose -f docker-compose.7gpu.yml up -d
 모델은 공유 볼륨 `terarium_ollama_models` 기준으로 한 번만 받아도 됩니다.
 
 ```bash
-docker exec ollama-gpu-0 ollama pull gemma4:e4b
+docker exec ollama-gpu-0 ollama pull igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M
 ```
 
 ## 확인
@@ -53,8 +53,8 @@ curl http://127.0.0.1:11440/api/tags
     "name": "SLM GPU 0",
     "type": "openai-compatible",
     "baseUrl": "http://<private-router-host>:<router-port>/gpu/0",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
+    "models": ["igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M"],
+    "defaultModel": "igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M",
     "concurrency": 1,
     "enabled": true,
     "workerPool": "slm",
