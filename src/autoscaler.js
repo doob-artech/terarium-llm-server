@@ -336,6 +336,8 @@ export class Autoscaler {
 
       const scaleUpCooldownActive =
         this.lastScaleUpAt && Date.now() - Date.parse(this.lastScaleUpAt) < config.autoscale.scaleUpCooldownMs;
+      const scaleDownGraceActive =
+        this.lastScaleUpAt && Date.now() - Date.parse(this.lastScaleUpAt) < config.autoscale.scaleDownIdleMs;
       const belowMinimumWorkers = capacity.totalWorkers < config.autoscale.minWorkers;
       const underThroughputTarget =
         pressure.targetWorkersByThroughput > 0 &&
@@ -356,6 +358,9 @@ export class Autoscaler {
             ? 'worker utilization sustained high'
             : 'average duration requires more workers for target throughput';
         await this.scaleUp(decision);
+      } else if (scaleDownGraceActive) {
+        decision.action = 'hold';
+        decision.reason = 'scale-down grace period after recent scale-up';
       } else if (pressure.sustainedLowUtilization && capacity.autoscaledWorkers > config.autoscale.minWorkers) {
         decision.action = 'scale_down_candidate';
         decision.reason = 'autoscaled capacity stayed under utilization target';
