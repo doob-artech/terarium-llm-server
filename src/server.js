@@ -206,6 +206,14 @@ app.post('/v1/autoscale/tick', requireAdminKey, async (req, res) => {
   }
 });
 
+app.post('/v1/autoscale/scale-up', requireAdminKey, async (req, res) => {
+  try {
+    res.json(await autoscaler.manualScaleUp({ source: req.body?.source || 'manual-api' }));
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'autoscale_scale_up_failed' } });
+  }
+});
+
 app.post('/v1/autoscale/reset', requireAdminKey, async (req, res) => {
   try {
     res.json({ ok: true, ...(await autoscaler.resetAutoscaledCapacity()) });

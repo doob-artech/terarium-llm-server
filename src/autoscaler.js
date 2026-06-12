@@ -424,6 +424,40 @@ export class Autoscaler {
     });
   }
 
+  async manualScaleUp({ source = 'manual' } = {}) {
+    if (this.running) {
+      this.record('manual_scale_up_skipped', 'autoscale evaluation already running', { source });
+      return this.status();
+    }
+
+    this.running = true;
+    try {
+      const capacity = this.capacity();
+      const decision = {
+        at: nowIso(),
+        action: 'manual_scale_up',
+        reason: 'manual scale-up requested',
+        source,
+        capacity,
+        pressure: this.pressure()
+      };
+
+      if (capacity.totalWorkers >= config.autoscale.maxWorkers) {
+        decision.action = 'hold';
+        decision.reason = 'max workers reached';
+        this.lastDecision = decision;
+        this.record('manual_scale_up_skipped', decision.reason, decision);
+        return this.status();
+      }
+
+      await this.scaleUp(decision);
+      this.lastDecision = decision;
+      return this.status();
+    } finally {
+      this.running = false;
+    }
+  }
+
   async syncManagedInstances() {
     if (!config.autoscale.enabled || config.autoscale.dryRun) return;
 

@@ -188,6 +188,7 @@ Content-Type: application/json
 | `GET` | `/v1/autoscale/status` | autoscale 상태 |
 | `PATCH` | `/v1/autoscale/settings` | autoscale 활성화/비활성화 |
 | `POST` | `/v1/autoscale/tick` | autoscale 즉시 평가 |
+| `POST` | `/v1/autoscale/scale-up` | autoscale 기본 설정으로 worker instance 1개 수동 생성 |
 | `POST` | `/v1/autoscale/reset` | autoscaled capacity 제거 |
 | `GET` | `/v1/instances` | instance 상태 |
 
