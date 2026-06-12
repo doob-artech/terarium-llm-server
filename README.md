@@ -26,8 +26,8 @@ client / world-server / playground
 
 | Pool | 용도 |
 | --- | --- |
-| `slm` | 기본 상시 추론 풀. 연구실 GPU, `igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M` |
-| `llm` | RunPod burst 풀. `igorls/gemma-4-12B-it-heretic-GGUF:Q4_K_M` |
+| `slm` | 기본 상시 추론 풀. 연구실 GPU, `gemma4:e4b` |
+| `llm` | RunPod burst 풀. `gemma4:12b` |
 
 현재 운영 기본값은 `slm`입니다.
 
@@ -35,7 +35,7 @@ client / world-server / playground
 DEFAULT_WORKER_POOL=slm
 WORKER_POOLS=slm,llm
 AUTOSCALE_WORKER_POOL=llm
-AUTOSCALE_WORKER_MODEL=igorls/gemma-4-12B-it-heretic-GGUF:Q4_K_M
+AUTOSCALE_WORKER_MODEL=gemma4:12b
 ```
 
 ## 네트워크 원칙
@@ -101,8 +101,8 @@ Worker 예:
   "name": "SLM GPU 0",
   "type": "openai-compatible",
   "baseUrl": "http://<private-worker-host>:<port>/gpu/0",
-  "models": ["igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M"],
-  "defaultModel": "igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M",
+  "models": ["gemma4:e4b"],
+  "defaultModel": "gemma4:e4b",
   "concurrency": 1,
   "enabled": true,
   "workerPool": "slm",
@@ -129,7 +129,7 @@ Content-Type: application/json
 
 ```json
 {
-  "model": "igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M",
+  "model": "gemma4:e4b",
   "messages": [
     { "role": "user", "content": "hello" }
   ],
@@ -143,7 +143,7 @@ Content-Type: application/json
 
 ```json
 {
-  "model": "igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M",
+  "model": "gemma4:e4b",
   "queue_worker_pool": "slm",
   "queue_worker_id": "slm-gpu-0",
   "messages": [
@@ -208,7 +208,7 @@ Content-Type: application/json
 | `LLM_SERVER_API_KEYS` | client API Bearer token 목록 |
 | `LLM_SERVER_ADMIN_KEY` | admin API Bearer token |
 | `LLM_SERVER_INSTANCE_KEY` | instance registration Bearer token |
-| `DEFAULT_MODEL` | 기본 모델. 운영 기본 `igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M` |
+| `DEFAULT_MODEL` | 기본 모델. 운영 기본 `gemma4:e4b` |
 | `DEFAULT_WORKER_POOL` | 기본 worker pool. 기본 `slm` |
 | `WORKER_POOLS` | 공개 상태에 표시할 pool 목록. 기본 `slm,llm` |
 | `REQUEST_TIMEOUT_MS` | worker upstream 요청 timeout. `0`이면 앱 레벨 timeout 없음 |
@@ -246,7 +246,7 @@ Content-Type: application/json
 
 - 운영 기본 worker pool은 `slm`입니다.
 - RunPod autoscaling은 현재 `llm` capacity 확장용입니다.
-- `slm` pool은 연구실 GPU에서 E4B heretic quantized 모델을 처리하는 상시 풀입니다.
+- `slm` pool은 연구실 GPU에서 공식 Gemma 4 E4B 모델을 처리하는 상시 풀입니다.
 - 큐 서버는 `REQUEST_TIMEOUT_MS=0`으로 두고, world-server나 caller에서 task별 timeout을 관리하는 편이 안전합니다.
 - 다중 `terarium-llm-server` 인스턴스를 운영하려면 Redis 같은 외부 queue가 필요합니다.
 - Playground는 로컬 개발 시 Vite proxy가 client key를 주입할 수 있습니다. 브라우저에 token을 직접 넣지 않아도 됩니다.
