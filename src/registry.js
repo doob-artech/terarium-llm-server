@@ -13,7 +13,7 @@ export function normalizeWorker(raw) {
     concurrency: Math.max(1, Number.parseInt(raw.concurrency, 10) || 1),
     enabled: raw.enabled !== false,
     apiKey: raw.apiKey || raw.api_key ? String(raw.apiKey || raw.api_key) : '',
-    workerPool: raw.workerPool || raw.worker_pool ? String(raw.workerPool || raw.worker_pool).trim() : 'agent',
+    workerPool: raw.workerPool || raw.worker_pool ? String(raw.workerPool || raw.worker_pool).trim() : config.defaultWorkerPool,
     healthStatus: raw.healthStatus || raw.health_status ? String(raw.healthStatus || raw.health_status) : 'unknown',
     healthReason: raw.healthReason || raw.health_reason ? String(raw.healthReason || raw.health_reason) : '',
     lastHealthCheckAt:
@@ -36,6 +36,10 @@ export function normalizeWorker(raw) {
     worker.healthStatus = 'unknown';
   }
   return worker;
+}
+
+function normalizeWorkerPool(value) {
+  return String(value || '').trim().toLowerCase();
 }
 
 function publicWorker(worker, runtime = {}) {
@@ -79,12 +83,42 @@ class BaseWorkerRegistry {
   }
 
   listEnabledForModel(model, workerPool = '') {
+    const requestedPool = normalizeWorkerPool(workerPool);
     return this.workers.filter((worker) => {
       if (!worker.enabled) return false;
       if (worker.healthStatus !== 'healthy') return false;
-      if (workerPool && worker.workerPool !== workerPool) return false;
+      if (requestedPool && normalizeWorkerPool(worker.workerPool) !== requestedPool) return false;
       if (!worker.models.length) return true;
       return worker.models.includes(model);
+    });
+  }
+
+  getAvailableForModel(id, model, workerPool = '') {
+    const worker = this.get(id);
+    if (!worker) return null;
+    const requestedPool = normalizeWorkerPool(workerPool);
+    if (!worker.enabled) return null;
+    if (worker.healthStatus !== 'healthy') return null;
+    if (requestedPool && normalizeWorkerPool(worker.workerPool) !== requestedPool) return null;
+    if (worker.models.length && !worker.models.includes(model)) return null;
+    return worker;
+  }
+
+  poolStatus() {
+    const pools = new Set([
+      ...config.workerPools,
+      ...this.workers.map((worker) => worker.workerPool).filter(Boolean)
+    ]);
+    return Array.from(pools).sort().map((pool) => {
+      const workers = this.listPublic().filter((worker) => worker.workerPool === pool);
+      return {
+        pool,
+        workers: workers.length,
+        available_workers: workers.filter((worker) => worker.available).length,
+        total_capacity: workers.reduce((sum, worker) => sum + Number(worker.concurrency || 0), 0),
+        available_capacity: workers.reduce((sum, worker) => (worker.available ? sum + Number(worker.concurrency || 0) : sum), 0),
+        active: workers.reduce((sum, worker) => sum + Number(worker.active || 0), 0)
+      };
     });
   }
 
@@ -216,7 +250,7 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
         concurrency integer NOT NULL DEFAULT 1 CHECK (concurrency > 0),
         enabled boolean NOT NULL DEFAULT true,
         api_key text NOT NULL DEFAULT '',
-        worker_pool text NOT NULL DEFAULT 'agent',
+        worker_pool text NOT NULL DEFAULT 'slm',
         health_status text NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('unknown', 'healthy', 'unhealthy')),
         health_reason text NOT NULL DEFAULT '',
         last_health_check_at timestamptz,
@@ -230,7 +264,8 @@ class PostgresWorkerRegistry extends BaseWorkerRegistry {
       )
     `);
     await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_status text NOT NULL DEFAULT 'unknown'");
-    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS worker_pool text NOT NULL DEFAULT 'agent'");
+    await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS worker_pool text NOT NULL DEFAULT 'slm'");
+    await this.pool.query("ALTER TABLE llm_workers ALTER COLUMN worker_pool SET DEFAULT 'slm'");
     await this.pool.query("ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS health_reason text NOT NULL DEFAULT ''");
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS last_health_check_at timestamptz');
     await this.pool.query('ALTER TABLE llm_workers ADD COLUMN IF NOT EXISTS consecutive_failures integer NOT NULL DEFAULT 0');

@@ -1,5 +1,4 @@
 import { config } from './config.js';
-import { VastProvider } from './vast.js';
 
 function nowMs() {
   return Date.now();
@@ -20,7 +19,6 @@ export class InstanceMonitor {
     this.workers = workers;
     this.healthMonitor = healthMonitor;
     this.queue = queue;
-    this.provider = new VastProvider();
     this.timer = null;
     this.running = false;
     this.events = [];
@@ -78,20 +76,6 @@ export class InstanceMonitor {
   async cleanup(instance) {
     const workers = this.relatedWorkers(instance);
     const key = instanceWorkerKey(instance);
-
-    if (instance.provider === 'vast' && instance.providerInstanceId) {
-      let destroyed = false;
-      await this.provider.destroyInstance(instance.providerInstanceId).then(() => {
-        destroyed = true;
-      }).catch((error) => {
-        this.record('destroy_failed', 'failed to destroy Vast.ai instance', {
-          instanceId: instance.id,
-          providerInstanceId: instance.providerInstanceId,
-          error: error.message || String(error)
-        });
-      });
-      if (!destroyed) return;
-    }
 
     if (config.instances.cleanupRemovesWorkers) {
       for (const worker of workers) {

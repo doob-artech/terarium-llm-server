@@ -18,6 +18,18 @@ const healthMonitor = new WorkerHealthMonitor(registry, { onWorkerRecovered: () 
 const autoscaler = new Autoscaler({ queue, registry, healthMonitor, instances });
 const instanceMonitor = new InstanceMonitor({ instances, workers: registry, healthMonitor, queue });
 
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (origin && config.corsAllowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
+
 app.use(express.json({ limit: '2mb' }));
 
 function instanceWorkerKey(instance) {
@@ -115,6 +127,7 @@ app.get('/health', (req, res) => {
     service: 'terarium-llm-server',
     default_model: config.defaultModel,
     workers: registry.listPublic().length,
+    worker_pools: registry.poolStatus(),
     instances: instances.listPublic().length,
     queue: {
       pending: queue.status().pending,

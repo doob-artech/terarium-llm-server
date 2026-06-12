@@ -1,5 +1,4 @@
 import { config } from './config.js';
-import { VastProvider, gpuCountFromInstance, instanceLabel } from './vast.js';
 import { RunPodProvider } from './runpod.js';
 
 function nowIso() {
@@ -31,21 +30,36 @@ function publicCreatedInstance(instance) {
   };
 }
 
+function publicInstanceCost(instance) {
+  const costPerHour = Number(instance?.cost_per_hour || 0);
+  const estimatedCost = Number(instance?.estimated_cost || 0);
+  return {
+    provider: instance?._autoscaleProvider || instance?.provider || '',
+    provider_instance_id: String(instance?.id || instance?.instance_id || ''),
+    label: String(instance?.label || instance?.name || ''),
+    status: String(instance?.actual_status || instance?.status || ''),
+    gpu_name: String(instance?.gpu_name || ''),
+    cost_per_hour: Number.isFinite(costPerHour) ? costPerHour : 0,
+    started_at: instance?.started_at || null,
+    uptime_seconds: Number(instance?.uptime_seconds || 0),
+    estimated_cost: Number.isFinite(estimatedCost) ? estimatedCost : 0
+  };
+}
+
 function createProvider(name) {
   const normalized = String(name || '').trim().toLowerCase();
   if (normalized === 'runpod-community') return new RunPodProvider({ cloudType: 'COMMUNITY' });
   if (normalized === 'runpod-secure') return new RunPodProvider({ cloudType: 'SECURE' });
-  if (normalized === 'vast') return new VastProvider();
   return null;
 }
 
 function providerName(provider) {
-  return String(provider?.name || 'vast').trim();
+  return String(provider?.name || 'runpod-community').trim();
 }
 
 function providerPrefix(providerOrName) {
   const name = typeof providerOrName === 'string' ? providerOrName : providerName(providerOrName);
-  return String(name || 'vast').replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  return String(name || 'runpod-community').replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
 }
 
 function providerLabel(providerOrName) {
@@ -53,7 +67,33 @@ function providerLabel(providerOrName) {
   if (providerOrName === 'runpod-community') return 'RunPod Community';
   if (providerOrName === 'runpod-secure') return 'RunPod Secure';
   if (providerOrName === 'runpod') return 'RunPod';
-  return 'Vast.ai';
+  return providerOrName;
+}
+
+function gpuCountFromInstance(instance) {
+  const candidates = [
+    instance?.gpu_count,
+    instance?.num_gpus,
+    instance?.gpus,
+    instance?.gpu_num,
+    instance?.n_gpus,
+    instance?.machine?.gpu_count,
+    instance?.machine?.num_gpus,
+    instance?.gpuCount
+  ];
+
+  for (const value of candidates) {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const gpuNameList = instance?.gpu_names || instance?.gpu_name;
+  if (Array.isArray(gpuNameList) && gpuNameList.length) return gpuNameList.length;
+  return 1;
+}
+
+function instanceLabel(instance) {
+  return String(instance?.label || instance?.name || instance?.id || instance?.instance_id || '').trim();
 }
 
 function providerCatalog() {
@@ -75,18 +115,6 @@ function providerCatalog() {
       enabled: config.autoscale.providers.includes('runpod-secure') && Boolean(config.runpod.apiKey)
     },
     {
-      id: 'vast',
-      label: 'Vast',
-      role: 'fallback autoscale pool',
-      gpu_types: [
-        `${config.autoscale.minGpuVramGb}-${config.autoscale.maxGpuVramGb}GB VRAM`,
-        `compute cap >= ${config.autoscale.minComputeCap}`,
-        `dlperf >= ${config.autoscale.minDlperf}`
-      ],
-      max_dollars_per_hour: config.autoscale.maxDollarsPerHour,
-      enabled: config.autoscale.providers.includes('vast') && Boolean(config.autoscale.apiKey)
-    },
-    {
       id: 'gpt-api',
       label: 'GPT API',
       role: 'quota fallback and high-quality reasoning',
@@ -104,7 +132,7 @@ export class Autoscaler {
     this.healthMonitor = healthMonitor;
     this.instances = instances;
     this.providers = Array.isArray(providers) ? providers : config.autoscale.providers.map(createProvider).filter(Boolean);
-    if (!this.providers.length) this.providers = [new VastProvider()];
+    if (!this.providers.length) this.providers = [new RunPodProvider({ cloudType: 'COMMUNITY' })];
     this.timer = null;
     this.running = false;
     this.events = [];
@@ -115,6 +143,7 @@ export class Autoscaler {
     this.managedInstances = new Map();
     this.modelPulls = new Map();
     this.failedOfferCooldowns = new Map();
+    this.providerInstanceCosts = new Map();
   }
 
   start() {
@@ -146,11 +175,10 @@ export class Autoscaler {
     const normalized = String(name || '').trim();
     return this.providers.find((provider) => providerName(provider) === normalized)
       || this.providers.find((provider) => normalized === 'runpod' && providerName(provider).startsWith('runpod-'))
-      || this.providers.find((provider) => providerName(provider) === 'vast')
       || this.providers[0];
   }
 
-  trackedProviderName(instanceId, fallback = 'vast') {
+  trackedProviderName(instanceId, fallback = 'runpod-community') {
     return this.managedInstances.get(String(instanceId || ''))?.provider || fallback;
   }
 
@@ -412,12 +440,17 @@ export class Autoscaler {
         instances.push({ ...instance, _autoscaleProvider: providerName(provider), provider: instance.provider || providerName(provider) });
       }
     }
+    this.providerInstanceCosts.clear();
+    for (const instance of instances) {
+      const instanceId = String(instance?.id || instance?.instance_id || '');
+      if (instanceId) this.providerInstanceCosts.set(instanceId, publicInstanceCost(instance));
+    }
     for (const entry of this.instances?.listPublic?.() || []) {
       if (entry.autoscaled && entry.providerInstanceId && !this.managedInstances.has(entry.providerInstanceId)) {
         this.managedInstances.set(entry.providerInstanceId, {
           createdAtMs: Date.now(),
           recovered: true,
-          provider: entry.provider || 'vast'
+            provider: entry.provider || 'runpod-community'
         });
       }
     }
@@ -429,7 +462,7 @@ export class Autoscaler {
         this.managedInstances.set(instanceId, {
           createdAtMs: startSeconds > 0 ? Math.floor(startSeconds * 1000) : Date.now(),
           recovered: true,
-          provider: instance._autoscaleProvider || instance.provider || 'vast'
+          provider: instance._autoscaleProvider || instance.provider || 'runpod-community'
         });
         this.record('instance_recovered', 'recovered live autoscale instance after restart', {
           provider: instance._autoscaleProvider || instance.provider,
@@ -472,7 +505,7 @@ export class Autoscaler {
 
     for (const [instanceId, tracked] of this.managedInstances.entries()) {
       if (Date.now() - tracked.createdAtMs < timeoutMs) continue;
-      const providerNameForInstance = tracked.provider || 'vast';
+      const providerNameForInstance = tracked.provider || 'runpod-community';
       const provider = this.providerByName(providerNameForInstance);
       const workers = this.registry.listPublic().filter((worker) => worker.autoscaled && worker.providerInstanceId === instanceId);
       if (workers.some((worker) => worker.available || worker.active > 0)) continue;
@@ -524,7 +557,7 @@ export class Autoscaler {
     const baseEndpoint = this.endpointFromInstance(instance);
     if (!baseEndpoint) return;
 
-    const providerNameForInstance = instance._autoscaleProvider || this.trackedProviderName(instanceId, instance.provider || 'vast');
+    const providerNameForInstance = instance._autoscaleProvider || this.trackedProviderName(instanceId, instance.provider || 'runpod-community');
     const prefix = providerPrefix(providerNameForInstance);
     const gpuCount = gpuCountFromInstance(instance);
     const label = instanceLabel(instance) || `${providerLabel(providerNameForInstance)} ${instanceId}`;
@@ -708,7 +741,7 @@ export class Autoscaler {
     const candidate = candidates[0];
     if (!candidate) return;
 
-    const providerNameForInstance = this.trackedProviderName(candidate.instanceId, candidate.workers[0]?.provider || 'vast');
+    const providerNameForInstance = this.trackedProviderName(candidate.instanceId, candidate.workers[0]?.provider || 'runpod-community');
     await this.providerByName(providerNameForInstance).destroyInstance(candidate.instanceId);
     for (const worker of candidate.workers) {
       await this.registry.remove(worker.id).catch(() => null);
@@ -726,15 +759,15 @@ export class Autoscaler {
   async resetAutoscaledCapacity() {
     const providerInstanceIds = new Map();
     for (const worker of this.registry.listPublic()) {
-      if (worker.autoscaled && worker.providerInstanceId) providerInstanceIds.set(worker.providerInstanceId, worker.provider || 'vast');
+      if (worker.autoscaled && worker.providerInstanceId) providerInstanceIds.set(worker.providerInstanceId, worker.provider || 'runpod-community');
     }
     if (this.instances) {
       for (const instance of this.instances.listPublic()) {
-        if (instance.autoscaled && instance.providerInstanceId) providerInstanceIds.set(instance.providerInstanceId, instance.provider || 'vast');
+        if (instance.autoscaled && instance.providerInstanceId) providerInstanceIds.set(instance.providerInstanceId, instance.provider || 'runpod-community');
       }
     }
     for (const [instanceId, tracked] of this.managedInstances.entries()) {
-      if (instanceId) providerInstanceIds.set(instanceId, tracked.provider || 'vast');
+      if (instanceId) providerInstanceIds.set(instanceId, tracked.provider || 'runpod-community');
     }
 
     for (const provider of this.providers) {
@@ -800,6 +833,7 @@ export class Autoscaler {
       enabled: config.autoscale.enabled,
       dryRun: config.autoscale.dryRun,
       providers: this.providers.map((provider) => providerName(provider)),
+      worker_pools: config.workerPools,
       worker_pool: config.autoscale.workerPool,
       provider_catalog: providerCatalog(),
       interval_ms: config.autoscale.intervalMs,
@@ -813,12 +847,6 @@ export class Autoscaler {
       target_requests_per_second: config.autoscale.targetRequestsPerSecond,
       min_workers: config.autoscale.minWorkers,
       max_workers: config.autoscale.maxWorkers,
-      min_gpu_vram_gb: config.autoscale.minGpuVramGb,
-      max_gpu_vram_gb: config.autoscale.maxGpuVramGb,
-      min_compute_cap: config.autoscale.minComputeCap,
-      min_dlperf: config.autoscale.minDlperf,
-      exclude_gpu_regex: config.autoscale.excludeGpuRegex,
-      max_dollars_per_hour: config.autoscale.maxDollarsPerHour,
       single_gpu_only: config.autoscale.singleGpuOnly,
       worker_model: config.autoscale.workerModel,
       template_uses_router: config.autoscale.templateUsesRouter,
@@ -830,6 +858,7 @@ export class Autoscaler {
       last_offer: publicOffer(this.lastOffer),
       model_pulls: [...this.modelPulls.keys()],
       failed_offer_cooldowns: this.activeFailedOfferCooldowns(),
+      provider_instance_costs: [...this.providerInstanceCosts.values()],
       capacity: this.capacity(),
       events: this.events
     };

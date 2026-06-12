@@ -62,6 +62,22 @@ function podPublicIp(pod) {
   ).trim();
 }
 
+function parseRunPodDate(value) {
+  if (!value) return null;
+  const parsed = new Date(String(value).replace(' +0000 UTC', 'Z'));
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function podCostPerHour(pod) {
+  const cost = Number(pod?.costPerHr ?? pod?.cost_per_hr ?? pod?.machine?.costPerHr ?? 0);
+  return Number.isFinite(cost) && cost > 0 ? cost : 0;
+}
+
+function podStartedAt(pod) {
+  return parseRunPodDate(pod?.lastStartedAt || pod?.last_started_at || pod?.createdAt || pod?.created_at);
+}
+
 function mappedPortFrom(value, targetPort) {
   if (!value) return '';
   const target = String(targetPort);
@@ -90,6 +106,9 @@ function mappedPortFrom(value, targetPort) {
 export function normalizeRunPodPod(pod) {
   const publicIp = podPublicIp(pod);
   const id = podId(pod);
+  const costPerHour = podCostPerHour(pod);
+  const startedAt = podStartedAt(pod);
+  const uptimeMs = startedAt ? Math.max(0, Date.now() - startedAt.getTime()) : 0;
   const httpProxyUrl = id ? `https://${id}-${config.autoscale.instancePort}.proxy.runpod.net` : '';
   const mappedPort = mappedPortFrom(pod?.ports, config.autoscale.instancePort)
     || mappedPortFrom(pod?.portMappings, config.autoscale.instancePort)
@@ -107,6 +126,10 @@ export function normalizeRunPodPod(pod) {
     actual_ports: mappedPort ? { [`${config.autoscale.instancePort}/tcp`]: mappedPort } : {},
     gpu_name: podGpuName(pod),
     gpu_count: Number.parseInt(pod?.gpuCount || 1, 10) || 1,
+    cost_per_hour: costPerHour,
+    started_at: startedAt ? startedAt.toISOString() : null,
+    uptime_seconds: Math.round(uptimeMs / 1000),
+    estimated_cost: costPerHour > 0 && uptimeMs > 0 ? Number(((uptimeMs / 3600000) * costPerHour).toFixed(4)) : 0,
     raw: pod
   };
 }
@@ -212,7 +235,12 @@ export class RunPodProvider {
     const data = await runpodRest('/pods', { method: 'GET' });
     const pods = Array.isArray(data?.value) ? data.value : Array.isArray(data?.pods) ? data.pods : Array.isArray(data) ? data : [];
     return pods
-      .filter((pod) => podLabel(pod).startsWith(`terarium-llm-${this.name}-`))
+      .filter((pod) => {
+        const label = podLabel(pod);
+        if (label.startsWith(`terarium-llm-${this.name}-`)) return true;
+        if (label.startsWith(`terarium-manual-${this.name}-`)) return true;
+        return this.name === 'runpod-community' && label.startsWith('terarium-manual-runpod-');
+      })
       .map(normalizeRunPodPod);
   }
 }

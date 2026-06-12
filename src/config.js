@@ -40,6 +40,14 @@ export const config = {
   host: process.env.HOST || '0.0.0.0',
   port: parseIntEnv(process.env.PORT, 18200),
   defaultModel: process.env.DEFAULT_MODEL || 'gemma4:e4b',
+  defaultWorkerPool: process.env.DEFAULT_WORKER_POOL || 'slm',
+  workerPools: splitList(process.env.WORKER_POOLS, ['slm', 'llm']),
+  corsAllowedOrigins: splitList(process.env.CORS_ALLOWED_ORIGINS, [
+    'http://localhost:5176',
+    'http://127.0.0.1:5176',
+    'https://terarium-playground.vercel.app',
+    'https://playground.team-doob.com'
+  ]),
   requestTimeoutMs: parseIntEnv(process.env.REQUEST_TIMEOUT_MS, 0),
   healthcheck: {
     enabled: parseBool(process.env.WORKER_HEALTHCHECK_ENABLED, true),
@@ -64,13 +72,6 @@ export const config = {
     targetUtilization: Number.parseFloat(process.env.AUTOSCALE_TARGET_UTILIZATION || '0.82'),
     scaleDownUtilization: Number.parseFloat(process.env.AUTOSCALE_SCALE_DOWN_UTILIZATION || '0.25'),
     targetRequestsPerSecond: Number.parseFloat(process.env.AUTOSCALE_TARGET_REQUESTS_PER_SECOND || '2'),
-    minGpuVramGb: parseIntEnv(process.env.AUTOSCALE_MIN_GPU_VRAM_GB, 12),
-    maxGpuVramGb: parseIntEnv(process.env.AUTOSCALE_MAX_GPU_VRAM_GB, 24),
-    minComputeCap: parseIntEnv(process.env.AUTOSCALE_MIN_COMPUTE_CAP, 800),
-    minDlperf: Number.parseFloat(process.env.AUTOSCALE_MIN_DLPERF || '10'),
-    excludeGpuRegex: process.env.AUTOSCALE_EXCLUDE_GPU_REGEX || 'Titan|Tesla|P100|P40|K80|T4|GTX|RTX 20|Q RTX',
-    minReliability: Number.parseFloat(process.env.AUTOSCALE_MIN_RELIABILITY || '0.98'),
-    maxDollarsPerHour: Number.parseFloat(process.env.AUTOSCALE_MAX_DOLLARS_PER_HOUR || '0.35'),
     diskGb: parseIntEnv(process.env.AUTOSCALE_DISK_GB, 16),
     instancePort: parseIntEnv(process.env.AUTOSCALE_INSTANCE_PORT, 11434),
     routerPort: parseIntEnv(process.env.AUTOSCALE_ROUTER_PORT, 18080),
@@ -78,13 +79,13 @@ export const config = {
     singleGpuOnly: parseBool(process.env.AUTOSCALE_SINGLE_GPU_ONLY, true),
     workerModel: process.env.AUTOSCALE_WORKER_MODEL || process.env.DEFAULT_MODEL || 'gemma4:e4b',
     registerPerGpu: parseBool(process.env.AUTOSCALE_REGISTER_PER_GPU, true),
-    templateHashId: process.env.VAST_TEMPLATE_HASH_ID || '',
-    templateUsesRouter: parseBool(process.env.VAST_TEMPLATE_USES_ROUTER, false),
-    dockerImage: process.env.VAST_DOCKER_IMAGE || 'ollama/ollama:latest',
-    apiKey: process.env.VAST_API_KEY || '',
-    apiBaseUrl: (process.env.VAST_API_BASE_URL || 'https://console.vast.ai/api/v0').replace(/\/+$/, ''),
-    providers: splitList(process.env.AUTOSCALE_PROVIDERS, ['runpod-community', 'runpod-secure', 'vast']),
-    workerPool: process.env.AUTOSCALE_WORKER_POOL || 'agent'
+    templateHashId: '',
+    templateUsesRouter: false,
+    dockerImage: process.env.AUTOSCALE_DOCKER_IMAGE || 'ollama/ollama:latest',
+    apiKey: '',
+    apiBaseUrl: '',
+    providers: splitList(process.env.AUTOSCALE_PROVIDERS, ['runpod-community', 'runpod-secure']),
+    workerPool: process.env.AUTOSCALE_WORKER_POOL || process.env.DEFAULT_WORKER_POOL || 'slm'
   },
   runpod: {
     apiKey: process.env.RUNPOD_API_KEY || '',
@@ -115,7 +116,7 @@ export const config = {
     volumeGb: parseIntEnv(process.env.RUNPOD_VOLUME_GB, 0),
     minVcpuCount: parseIntEnv(process.env.RUNPOD_MIN_VCPU_COUNT, 2),
     minMemoryInGb: parseIntEnv(process.env.RUNPOD_MIN_MEMORY_GB, 15),
-    dockerImage: process.env.RUNPOD_DOCKER_IMAGE || process.env.VAST_DOCKER_IMAGE || 'ollama/ollama:latest'
+    dockerImage: process.env.RUNPOD_DOCKER_IMAGE || process.env.AUTOSCALE_DOCKER_IMAGE || 'ollama/ollama:latest'
   },
   instances: {
     enabled: parseBool(process.env.INSTANCE_MONITOR_ENABLED, true),

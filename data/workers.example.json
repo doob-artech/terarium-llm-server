@@ -1,79 +1,14 @@
 [
   {
-    "id": "vilab-gpu-0",
-    "name": "vilab tailscale GPU 0",
+    "id": "slm-gpu-0",
+    "name": "SLM GPU 0",
     "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/0",
+    "baseUrl": "http://<private-worker-host>:<port>/gpu/0",
     "models": ["gemma4:e4b"],
     "defaultModel": "gemma4:e4b",
     "concurrency": 1,
     "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-1",
-    "name": "vilab tailscale GPU 1",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/1",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-2",
-    "name": "vilab tailscale GPU 2",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/2",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-3",
-    "name": "vilab tailscale GPU 3",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/3",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-4",
-    "name": "vilab tailscale GPU 4",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/4",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-5",
-    "name": "vilab tailscale GPU 5",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/5",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
-    "apiKey": "change-me"
-  },
-  {
-    "id": "vilab-gpu-6",
-    "name": "vilab tailscale GPU 6",
-    "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/6",
-    "models": ["gemma4:e4b"],
-    "defaultModel": "gemma4:e4b",
-    "concurrency": 1,
-    "enabled": true,
+    "workerPool": "slm",
     "apiKey": "change-me"
   }
 ]

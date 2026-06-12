@@ -1,18 +1,18 @@
-# GPU별 Ollama 워커 실행
+# GPU별 SLM 워커 실행
 
-이 문서는 한 서버의 여러 GPU를 각각 독립 워커로 실행하는 운영 패턴을 설명합니다.
+이 문서는 한 서버의 여러 GPU를 각각 독립 SLM worker로 실행하는 운영 패턴을 설명합니다.
 
 현재 예시는 GPU 7개 서버를 기준으로 합니다.
 
 | GPU | 컨테이너 | 호스트 포트 | `llm_workers.id` |
 | --- | --- | --- | --- |
-| 0 | `ollama-gpu-0` | `11434` | `vilab-gpu-0` |
-| 1 | `ollama-gpu-1` | `11435` | `vilab-gpu-1` |
-| 2 | `ollama-gpu-2` | `11436` | `vilab-gpu-2` |
-| 3 | `ollama-gpu-3` | `11437` | `vilab-gpu-3` |
-| 4 | `ollama-gpu-4` | `11438` | `vilab-gpu-4` |
-| 5 | `ollama-gpu-5` | `11439` | `vilab-gpu-5` |
-| 6 | `ollama-gpu-6` | `11440` | `vilab-gpu-6` |
+| 0 | `ollama-gpu-0` | `11434` | `slm-gpu-0` |
+| 1 | `ollama-gpu-1` | `11435` | `slm-gpu-1` |
+| 2 | `ollama-gpu-2` | `11436` | `slm-gpu-2` |
+| 3 | `ollama-gpu-3` | `11437` | `slm-gpu-3` |
+| 4 | `ollama-gpu-4` | `11438` | `slm-gpu-4` |
+| 5 | `ollama-gpu-5` | `11439` | `slm-gpu-5` |
+| 6 | `ollama-gpu-6` | `11440` | `slm-gpu-6` |
 
 ## 실행
 
@@ -40,6 +40,7 @@ curl http://127.0.0.1:11440/api/tags
 
 - 각 컨테이너는 서로 다른 GPU만 보도록 분리해야 합니다.
 - `terarium-llm-server` 는 GPU별 워커를 각각 다른 `id` 로 등록해야 합니다.
+- 소형 GPU worker는 기본적으로 `workerPool: "slm"`으로 등록합니다.
 - 외부에서 직접 `11434~11440` 을 노출할 필요는 없습니다.
 - 가능하면 nginx 또는 라우터를 앞에 두고 Tailscale/private network 로만 접근하게 두는 편이 낫습니다.
 
@@ -48,14 +49,15 @@ curl http://127.0.0.1:11440/api/tags
 ```json
 [
   {
-    "id": "vilab-gpu-0",
-    "name": "vilab tailscale GPU 0",
+    "id": "slm-gpu-0",
+    "name": "SLM GPU 0",
     "type": "openai-compatible",
-    "baseUrl": "http://100.80.215.107:18000/gpu/0",
+    "baseUrl": "http://<private-router-host>:<router-port>/gpu/0",
     "models": ["gemma4:e4b"],
     "defaultModel": "gemma4:e4b",
     "concurrency": 1,
     "enabled": true,
+    "workerPool": "slm",
     "apiKey": "change-me"
   }
 ]

@@ -54,6 +54,7 @@ export class LlmQueue {
     const priority = normalizePriority(body.queue_priority ?? body.priority);
     const source = String(body.queue_source || body.request_source || '').trim().slice(0, 120);
     const workerPool = String(body.queue_worker_pool || body.worker_pool || '').trim().slice(0, 80);
+    const workerId = String(body.queue_worker_id || body.worker_id || '').trim().slice(0, 120);
     const startTimeoutMs = normalizeStartTimeoutMs(body.queue_start_timeout_ms);
     const {
       queue_priority,
@@ -62,6 +63,8 @@ export class LlmQueue {
       request_source,
       queue_worker_pool,
       worker_pool,
+      queue_worker_id,
+      worker_id,
       queue_start_timeout_ms,
       ...workerBody
     } = body;
@@ -73,6 +76,7 @@ export class LlmQueue {
       priority: priority.score,
       priorityLabel: priority.label,
       workerPool,
+      workerId,
       source,
       startTimeoutMs,
       sequence: this.sequence++
@@ -114,7 +118,15 @@ export class LlmQueue {
     return true;
   }
 
-  chooseWorker(model, workerPool = '') {
+  chooseWorker(model, workerPool = '', workerId = '') {
+    if (workerId) {
+      const worker = this.registry.getAvailableForModel(workerId, model, workerPool);
+      if (!worker) return null;
+      const runtime = this.registry.getRuntime(worker.id);
+      if (runtime.active >= worker.concurrency) return null;
+      return worker;
+    }
+
     const workers = this.registry.listEnabledForModel(model, workerPool);
     let best = null;
     let bestLoad = Number.POSITIVE_INFINITY;
@@ -138,7 +150,7 @@ export class LlmQueue {
 
     for (let index = 0; index < this.pending.length; index += 1) {
       const request = this.pending[index];
-      const worker = this.chooseWorker(request.model, request.workerPool);
+      const worker = this.chooseWorker(request.model, request.workerPool, request.workerId);
       if (!worker) continue;
 
       this.pending.splice(index, 1);
@@ -161,6 +173,7 @@ export class LlmQueue {
       startedAt: new Date(startedAtMs).toISOString(),
       priority: request.priorityLabel,
       workerPool: request.workerPool || '',
+      requestedWorkerId: request.workerId || '',
       source: request.source
     });
 
@@ -215,6 +228,7 @@ export class LlmQueue {
       last_error: this.lastError,
       avg_duration_ms: duration.avg_ms,
       duration_sample_count: duration.count,
+      worker_pools: this.registry.poolStatus(),
       running_requests: Array.from(this.running.values()),
       pending_requests: this.pending.map((request) => ({
         id: request.id,
@@ -222,6 +236,7 @@ export class LlmQueue {
         enqueuedAt: request.enqueuedAt,
         priority: request.priorityLabel,
         workerPool: request.workerPool || '',
+        requestedWorkerId: request.workerId || '',
         source: request.source,
         startTimeoutMs: request.startTimeoutMs
       }))
