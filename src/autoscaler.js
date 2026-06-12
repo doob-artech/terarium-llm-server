@@ -141,6 +141,7 @@ export class Autoscaler {
     this.lastDecision = null;
     this.lastOffer = null;
     this.managedInstances = new Map();
+    this.manualInstances = new Map();
     this.modelPulls = new Map();
     this.failedOfferCooldowns = new Map();
     this.providerInstanceCosts = new Map();
@@ -179,7 +180,8 @@ export class Autoscaler {
   }
 
   trackedProviderName(instanceId, fallback = 'runpod-community') {
-    return this.managedInstances.get(String(instanceId || ''))?.provider || fallback;
+    const id = String(instanceId || '');
+    return this.managedInstances.get(id)?.provider || this.manualInstances.get(id)?.provider || fallback;
   }
 
   offerCooldownKey(provider, offer) {
@@ -384,6 +386,15 @@ export class Autoscaler {
       return;
     }
 
+    await this.createGpuInstance(decision, {
+      namePrefix: 'terarium-llm',
+      manual: false,
+      successType: 'scale_up_created',
+      failureType: 'scale_up_failed'
+    });
+  }
+
+  async createGpuInstance(decision, { namePrefix, manual = false, successType, failureType } = {}) {
     let offer = null;
     let instance = null;
     let selectedProvider = null;
@@ -401,7 +412,10 @@ export class Autoscaler {
         }
         this.lastOffer = candidate;
         try {
-          instance = await provider.createInstance(candidate);
+          instance = await provider.createInstance(candidate, {
+            namePrefix,
+            workerModel: config.autoscale.workerModel
+          });
           offer = candidate;
           selectedProvider = provider;
           break;
@@ -415,38 +429,37 @@ export class Autoscaler {
       if (instance && offer) break;
     }
     if (!instance || !offer) {
-      this.record('scale_up_failed', 'no matching GPU worker offer could be created', { ...decision, failedOffers });
-      return;
+      this.record(failureType || 'instance_create_failed', 'no matching GPU worker offer could be created', { ...decision, failedOffers });
+      return null;
     }
 
     const instanceId = String(instance?.new_contract || instance?.instance_id || instance?.id || '');
-    this.managedInstances.set(instanceId, { createdAtMs: Date.now(), offer, instance, provider: providerName(selectedProvider) });
+    const tracked = { createdAtMs: Date.now(), offer, instance, provider: providerName(selectedProvider), manual };
+    if (manual) this.manualInstances.set(instanceId, tracked);
+    else this.managedInstances.set(instanceId, tracked);
     this.lastScaleUpAt = nowIso();
-    this.record('scale_up_created', `created ${providerLabel(selectedProvider)} instance; waiting for port mapping and healthcheck`, {
+    this.record(successType || 'instance_created', `created ${providerLabel(selectedProvider)} instance; waiting for port mapping and healthcheck`, {
       provider: providerName(selectedProvider),
       offer: publicOffer(offer),
-      instance: publicCreatedInstance(instance)
+      instance: publicCreatedInstance(instance),
+      manual
     });
+    return { instanceId, offer, instance, provider: selectedProvider };
   }
 
-  async manualScaleUp({ source = 'manual' } = {}) {
+  async manualCreateInstance({ source = 'manual' } = {}) {
     if (this.running) {
-      this.record('manual_scale_up_skipped', 'autoscale evaluation already running', { source });
+      this.record('manual_instance_create_skipped', 'instance creation already running', { source });
       return this.status();
     }
 
     this.running = true;
     try {
-      if (!config.autoscale.enabled) {
-        config.autoscale.enabled = true;
-        this.record('autoscale_enabled', 'GPU autoscale enabled for manual scale-up', { source, destroyCapacity: false });
-      }
-
       const capacity = this.capacity();
       const decision = {
         at: nowIso(),
-        action: 'manual_scale_up',
-        reason: 'manual scale-up requested',
+        action: 'manual_instance_create',
+        reason: 'manual instance creation requested',
         source,
         capacity,
         pressure: this.pressure()
@@ -456,21 +469,29 @@ export class Autoscaler {
         decision.action = 'hold';
         decision.reason = 'max workers reached';
         this.lastDecision = decision;
-        this.record('manual_scale_up_skipped', decision.reason, decision);
+        this.record('manual_instance_create_skipped', decision.reason, decision);
         return this.status();
       }
 
-      await this.scaleUp(decision);
+      await this.createGpuInstance(decision, {
+        namePrefix: 'terarium-manual',
+        manual: true,
+        successType: 'manual_instance_created',
+        failureType: 'manual_instance_create_failed'
+      });
       this.lastDecision = decision;
+      await this.syncManagedInstances();
       return this.status();
     } finally {
       this.running = false;
     }
   }
 
-  async syncManagedInstances() {
-    if (!config.autoscale.enabled || config.autoscale.dryRun) return;
+  async manualScaleUp(options = {}) {
+    return this.manualCreateInstance(options);
+  }
 
+  async listProviderInstances() {
     const instances = [];
     for (const provider of this.providers) {
       const providerInstances = await provider.listInstances().catch((error) => {
@@ -484,11 +505,44 @@ export class Autoscaler {
         instances.push({ ...instance, _autoscaleProvider: providerName(provider), provider: instance.provider || providerName(provider) });
       }
     }
+    return instances;
+  }
+
+  async syncManagedInstances() {
+    const instances = await this.listProviderInstances();
     this.providerInstanceCosts.clear();
     for (const instance of instances) {
       const instanceId = String(instance?.id || instance?.instance_id || '');
       if (instanceId) this.providerInstanceCosts.set(instanceId, publicInstanceCost(instance));
     }
+
+    for (const instance of instances) {
+      const instanceId = String(instance?.id || instance?.instance_id || '');
+      const label = String(instance?.label || instance?.name || '');
+      if (instanceId && label.startsWith('terarium-manual-') && !this.manualInstances.has(instanceId)) {
+        const startSeconds = Number(instance?.start_date || 0);
+        this.manualInstances.set(instanceId, {
+          createdAtMs: startSeconds > 0 ? Math.floor(startSeconds * 1000) : Date.now(),
+          recovered: true,
+          manual: true,
+          provider: instance._autoscaleProvider || instance.provider || 'runpod-community'
+        });
+        this.record('manual_instance_recovered', 'recovered live manual instance after restart', {
+          provider: instance._autoscaleProvider || instance.provider,
+          instanceId,
+          label
+        });
+      }
+    }
+
+    for (const instance of instances) {
+      const instanceId = String(instance?.id || instance?.instance_id || '');
+      if (!this.manualInstances.has(instanceId)) continue;
+      await this.registerInstanceWorkers(instanceId, instance, { autoscaled: false, source: 'manual' });
+    }
+
+    if (!config.autoscale.enabled || config.autoscale.dryRun) return;
+
     for (const entry of this.instances?.listPublic?.() || []) {
       if (entry.autoscaled && entry.providerInstanceId && !this.managedInstances.has(entry.providerInstanceId)) {
         this.managedInstances.set(entry.providerInstanceId, {
@@ -520,7 +574,7 @@ export class Autoscaler {
     for (const instance of instances) {
       const instanceId = String(instance?.id || instance?.instance_id || '');
       if (!this.managedInstances.has(instanceId)) continue;
-      await this.registerInstanceWorkers(instanceId, instance);
+      await this.registerInstanceWorkers(instanceId, instance, { autoscaled: true, source: 'autoscaler' });
     }
 
     const liveIds = new Set(instances.map((instance) => String(instance?.id || instance?.instance_id || '')).filter(Boolean));
@@ -595,12 +649,16 @@ export class Autoscaler {
     return `http://${host}`;
   }
 
-  async registerInstanceWorkers(instanceId, instance) {
+  async registerInstanceWorkers(instanceId, instance, options = {}) {
     if (!instanceId) return;
 
     const baseEndpoint = this.endpointFromInstance(instance);
     if (!baseEndpoint) return;
 
+    const autoscaled = options.autoscaled !== false;
+    const source = options.source || (autoscaled ? 'autoscaler' : 'manual');
+    const workerPool = options.workerPool || config.autoscale.workerPool;
+    const workerModel = options.workerModel || config.autoscale.workerModel;
     const providerNameForInstance = instance._autoscaleProvider || this.trackedProviderName(instanceId, instance.provider || 'runpod-community');
     const prefix = providerPrefix(providerNameForInstance);
     const gpuCount = gpuCountFromInstance(instance);
@@ -621,13 +679,13 @@ export class Autoscaler {
           host: instance?.public_ipaddr || instance?.ssh_host || instance?.host || '',
           publicBaseUrl,
           gpuCount,
-          autoscaled: true,
+          autoscaled,
           status: 'running',
           healthStatus: 'unknown',
           healthReason: '',
           metadata: {
-            source: 'autoscaler',
-            workerPool: config.autoscale.workerPool,
+            source,
+            workerPool,
             routerPort: config.autoscale.routerPort,
             templateHashId: config.autoscale.templateHashId || '',
             templateUsesRouter: config.autoscale.templateUsesRouter
@@ -658,14 +716,14 @@ export class Autoscaler {
         name: `${label} GPU ${gpuIndex}`,
         type: 'ollama',
         baseUrl,
-        models: [config.defaultModel],
-        defaultModel: config.autoscale.workerModel,
+        models: [workerModel],
+        defaultModel: workerModel,
         concurrency: 1,
         enabled: true,
         provider: providerNameForInstance,
         providerInstanceId: instanceId,
-        autoscaled: true,
-        workerPool: config.autoscale.workerPool
+        autoscaled,
+        workerPool
       };
 
       const previousWorker = this.registry.listPublic().find((worker) => worker.id === workerId);
@@ -798,6 +856,39 @@ export class Autoscaler {
       instanceId: candidate.instanceId,
       workerIds: candidate.workers.map((worker) => worker.id)
     });
+  }
+
+  async destroyProviderInstance(instanceId, { source = 'manual-api' } = {}) {
+    const id = String(instanceId || '').trim();
+    if (!id) throw new Error('provider instance id is required');
+
+    const worker = this.registry.listPublic().find((item) => item.providerInstanceId === id);
+    const instance = this.instances?.listPublic?.().find((item) => item.providerInstanceId === id);
+    const providerNameForInstance =
+      this.manualInstances.get(id)?.provider ||
+      this.managedInstances.get(id)?.provider ||
+      worker?.provider ||
+      instance?.provider ||
+      'runpod-community';
+
+    await this.providerByName(providerNameForInstance).destroyInstance(id);
+
+    const removedWorkers = [];
+    for (const item of this.registry.listPublic().filter((entry) => entry.providerInstanceId === id)) {
+      await this.registry.remove(item.id).catch(() => null);
+      removedWorkers.push(item.id);
+    }
+    if (this.instances && instance?.id) await this.instances.remove(instance.id).catch(() => null);
+    this.manualInstances.delete(id);
+    this.managedInstances.delete(id);
+    this.lastScaleDownAt = nowIso();
+    this.record('instance_destroyed', 'destroyed provider instance', {
+      provider: providerNameForInstance,
+      instanceId: id,
+      removedWorkers,
+      source
+    });
+    return { ok: true, provider: providerNameForInstance, instanceId: id, removedWorkers };
   }
 
   async resetAutoscaledCapacity() {

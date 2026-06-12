@@ -214,6 +214,14 @@ app.post('/v1/autoscale/scale-up', requireAdminKey, async (req, res) => {
   }
 });
 
+app.post('/v1/instances/manual', requireAdminKey, async (req, res) => {
+  try {
+    res.json(await autoscaler.manualCreateInstance({ source: req.body?.source || 'manual-api' }));
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, type: 'manual_instance_create_failed' } });
+  }
+});
+
 app.post('/v1/autoscale/reset', requireAdminKey, async (req, res) => {
   try {
     res.json({ ok: true, ...(await autoscaler.resetAutoscaledCapacity()) });
@@ -228,6 +236,14 @@ app.get('/v1/workers', requireAdminKey, (req, res) => {
 
 app.get('/v1/instances', requireAdminKey, (req, res) => {
   res.json(instanceMonitor.status());
+});
+
+app.delete('/v1/instances/:providerInstanceId', requireAdminKey, async (req, res) => {
+  try {
+    res.json(await autoscaler.destroyProviderInstance(req.params.providerInstanceId, { source: 'manual-api' }));
+  } catch (error) {
+    res.status(404).json({ error: { message: error.message, type: 'instance_destroy_failed' } });
+  }
 });
 
 app.post('/v1/instances/register', requireInstanceKey, async (req, res) => {

@@ -194,7 +194,9 @@ export class RunPodProvider {
     return offers;
   }
 
-  async createInstance(offer) {
+  async createInstance(offer, options = {}) {
+    const namePrefix = String(options.namePrefix || 'terarium-llm').replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+    const workerModel = String(options.workerModel || config.autoscale.workerModel || config.defaultModel || '').trim();
     const body = {
       cloudType: this.cloudType,
       computeType: 'GPU',
@@ -205,10 +207,10 @@ export class RunPodProvider {
       minVCPUPerGPU: config.runpod.minVcpuCount,
       minRAMPerGPU: config.runpod.minMemoryInGb,
       imageName: config.runpod.dockerImage,
-      name: `terarium-llm-${this.name}-${Date.now()}`,
+      name: `${namePrefix}-${this.name}-${Date.now()}`,
       env: {
         OLLAMA_HOST: `0.0.0.0:${config.autoscale.instancePort}`,
-        TERARIUM_WORKER_MODEL: config.autoscale.workerModel
+        TERARIUM_WORKER_MODEL: workerModel
       },
       ports: [`${config.autoscale.instancePort}/http`],
       dockerStartCmd: ['serve'],
