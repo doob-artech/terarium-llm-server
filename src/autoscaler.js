@@ -432,6 +432,11 @@ export class Autoscaler {
 
     this.running = true;
     try {
+      if (!config.autoscale.enabled) {
+        config.autoscale.enabled = true;
+        this.record('autoscale_enabled', 'GPU autoscale enabled for manual scale-up', { source, destroyCapacity: false });
+      }
+
       const capacity = this.capacity();
       const decision = {
         at: nowIso(),
