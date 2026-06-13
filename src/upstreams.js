@@ -139,9 +139,15 @@ export async function callWorker(worker, body) {
 async function callOpenAiCompatible(worker, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (worker.apiKey) headers.Authorization = `Bearer ${worker.apiKey}`;
+  const {
+    num_predict,
+    repeat_penalty,
+    think,
+    ...openAiBody
+  } = body;
 
   const requestBody = {
-    ...body,
+    ...openAiBody,
     model: modelFor(worker, body.model)
   };
 
